@@ -66,6 +66,9 @@
 #ifdef AIO
 #include <libaio.h>
 #endif
+#ifdef FALLOCATE
+#include <linux/falloc.h>
+#endif
 #include "slacker.h"
 
 /*
@@ -85,19 +88,51 @@ int			logptr = 0;	/* current position in log */
 int			logcount = 0;	/* total ops */
 
 /*
- *	Define operations
+ * The operation matrix is complex due to conditional execution of different
+ * features. Hence when we come to deciding what operation to run, we need to
+ * be careful in how we select the different operations. The active operations
+ * are mapped to numbers as follows:
+ *
+ *		lite	!lite
+ * READ:	0	0
+ * WRITE:	1	1
+ * MAPREAD:	2	2
+ * MAPWRITE:	3	3
+ * TRUNCATE:	-	4
+ * FALLOCATE:	-	5
+ * PUNCH HOLE:	-	6
+ *
+ * When mapped read/writes are disabled, they are simply converted to normal
+ * reads and writes. When fallocate/fpunch calls are disabled, they are
+ * converted to OP_SKIPPED. Hence OP_SKIPPED needs to have a number higher than
+ * the operation selction matrix, as does the OP_CLOSEOPEN which is an
+ * operation modifier rather than an operation in itself.
+ *
+ * Because of the "lite" version, we also need to have different "maximum
+ * operation" defines to allow the ops to be selected correctly based on the
+ * mode being run.
  */
 
-#define	OP_READ		1
-#define OP_WRITE	2
-#define OP_TRUNCATE	3
-#define OP_CLOSEOPEN	4
-#define OP_MAPREAD	5
-#define OP_MAPWRITE	6
-#define OP_SKIPPED	7
+/* common operations */
+#define	OP_READ		0
+#define OP_WRITE	1
+#define OP_MAPREAD	2
+#define OP_MAPWRITE	3
+#define OP_MAX_LITE	4
+
+/* !lite operations */
+#define OP_TRUNCATE	4
+#define OP_FALLOCATE	5
+#define OP_PUNCH_HOLE	6
+#define OP_MAX_FULL	7
+
+/* operation modifiers */
+#define OP_CLOSEOPEN	100
+#define OP_SKIPPED	101
 
 int page_size;
 int page_mask;
+int mmap_mask;
 
 char	*original_buf;			/* a pointer to the original data */
 char	*good_buf, *good_buf_save;	/* a pointer to the correct data */
@@ -116,6 +151,7 @@ int	closeprob = 0;			/* -c flag */
 int	debug = 0;			/* -d flag */
 unsigned long	debugstart = 0;		/* -D flag */
 int	do_fsync = 0;			/* -f flag */
+int	flush = 0;			/* -y flag */
 unsigned long	maxfilelen = 256 * 1024;	/* -l flag */
 int	sizechecks = 1;			/* -n flag disables them */
 int	maxoplen = 64 * 1024;		/* -o flag */
@@ -131,10 +167,12 @@ int	lite = 0;			/* -L flag */
 long	numops = -1;			/* -N flag */
 int	randomoplen = 1;		/* -O flag disables it */
 int	seed = 1;			/* -S flag */
+int	fallocate_calls = 1;            /* -F flag disables */
+int	punch_hole_calls = 1;           /* -H flag disables */
 int     mapped_writes = 1;              /* -W flag disables */
 int 	mapped_reads = 1;		/* -R flag disables it */
 int	o_direct = 0;			/* -Z */
-int	no_truncate = 0;		/* -F */
+int	no_truncate = 0;		/* -T */
 int	aio = 0;
 int	fsxgoodfd = 0;
 FILE *	fsxlogf = NULL;
@@ -198,10 +236,7 @@ static void *round_up(void *ptr, unsigned long align, unsigned long offset)
 }
 
 void
-vwarnc(code, fmt, ap)
-	int code;
-	const char *fmt;
-	va_list ap;
+vwarnc(int code, const char *fmt, va_list ap)
 {
 	fprintf(stderr, "fsx: ");
 	if (fmt != NULL) {
@@ -220,7 +255,6 @@ warn(const char * fmt, ...)
 	vwarnc(errno, fmt, ap);
 	va_end(ap);
 }
-
 
 void
 __attribute__((format(printf, 1, 2)))
@@ -269,6 +303,7 @@ logdump(void)
 {
 	int	i, count, down;
 	struct log_entry	*lp;
+	char *falloc_type[3] = {"PAST_EOF", "EXTENDING", "INTERIOR"};
 
 	prt("LOG DUMP (%d total operations):\n", logcount);
 	if (logcount < LOGSIZE) {
@@ -330,6 +365,23 @@ logdump(void)
 			if (badoff >= lp->args[!down] &&
 			    badoff < lp->args[!!down])
 				prt("\t******WWWW");
+			break;
+		case OP_FALLOCATE:
+			/* 0: offset 1: length 2: where alloced */
+			prt("FALLOC   0x%x thru 0x%x (0x%x bytes) %s",
+				lp->args[0], lp->args[0] + lp->args[1],
+				lp->args[1], falloc_type[lp->args[2]]);
+			if (badoff >= lp->args[0] &&
+			    badoff < lp->args[0] + lp->args[1])
+				prt("\t******FFFF");
+			break;
+		case OP_PUNCH_HOLE:
+			prt("PUNCH    0x%x thru 0x%x (0x%x bytes)",
+			    lp->args[0], lp->args[0] + lp->args[1] - 1,
+			    lp->args[1]);
+			if (badoff >= lp->args[0] && badoff <
+						     lp->args[0] + lp->args[1])
+				prt("\t******PPPP");
 			break;
 		case OP_CLOSEOPEN:
 			prt("CLOSE/OPEN");
@@ -653,6 +705,7 @@ output_line(struct test_file *tf, int op, unsigned offset,
 		unsigned size, struct timeval *tv)
 {
 	char *tf_num = "";
+	char *str;
 
 	char *ops[] = {
 		[OP_READ] = "read",
@@ -660,6 +713,8 @@ output_line(struct test_file *tf, int op, unsigned offset,
 		[OP_TRUNCATE] = "trunc from",
 		[OP_MAPREAD] = "mapread",
 		[OP_MAPWRITE] = "mapwrite",
+		[OP_FALLOCATE] = "falloc",
+		[OP_PUNCH_HOLE] = "punch",
 	};
 
 	/* W. */
@@ -674,10 +729,19 @@ output_line(struct test_file *tf, int op, unsigned offset,
 	if (fd_policy != FD_SINGLE)
 		tf_num = fill_tf_buf(tf);
 
+	switch (op) {
+	case OP_TRUNCATE:
+	case OP_FALLOCATE:
+		str = "to";
+		break;
+	default:
+		str = "thru";
+		break;
+	}
 	prt("%06lu %lu.%06lu %.*s%-10s %#08x %s %#08x\t(0x%x bytes)\n",
 		testcalls, tv->tv_sec, tv->tv_usec, max_tf_len,
 		tf_num, ops[op],
-		offset, op == OP_TRUNCATE ? " to " : "thru",
+		offset, str,
 		offset + size - 1, size);
 }
 
@@ -738,6 +802,34 @@ doread(unsigned offset, unsigned size)
 	check_buffers(offset, size);
 }
 
+void
+check_eofpage(char *s, unsigned offset, char *p, int size)
+{
+	unsigned long last_page, should_be_zero;
+
+	if (offset + size <= (file_size & ~page_mask))
+		return;
+	/*
+	 * we landed in the last page of the file
+	 * test to make sure the VM system provided 0's
+	 * beyond the true end of the file mapping
+	 * (as required by mmap def in 1996 posix 1003.1)
+	 */
+	last_page = ((unsigned long)p + (offset & page_mask) + size) & ~page_mask;
+
+	for (should_be_zero = last_page + (file_size & page_mask);
+	     should_be_zero < last_page + page_size;
+	     should_be_zero++)
+		if (*(char *)should_be_zero) {
+			prt("Mapped %s: non-zero data past EOF (0x%llx) "
+			    "page offset 0x%lx is 0x%04x\n",
+			    s, (unsigned long long)(file_size - 1),
+			    should_be_zero & page_mask,
+			    short_at(should_be_zero));
+			report_failure(205);
+		}
+}
+
 
 void
 domapread(unsigned offset, unsigned size)
@@ -794,6 +886,9 @@ domapread(unsigned offset, unsigned size)
 		gettimeofday(&t, NULL);
 		prt("       %lu.%06lu memcpy done\n", t.tv_sec, t.tv_usec);
 	}
+
+	check_eofpage("Read", offset, p, size);
+
 	if (munmap(p, map_size) != 0) {
 		prterr("domapread: munmap");
 		report_failure(191);
@@ -821,6 +916,34 @@ gendata(char *original_buf, char *good_buf, unsigned offset, unsigned size)
 	}
 }
 
+void
+doflush(int fd, unsigned offset, unsigned size)
+{
+	unsigned pg_offset;
+	unsigned map_size;
+	char    *p;
+
+	if (o_direct == O_DIRECT)
+		return;
+
+	pg_offset = offset & mmap_mask;
+	map_size  = pg_offset + size;
+
+	if ((p = (char *)mmap(0, map_size, PROT_READ | PROT_WRITE,
+			      MAP_FILE | MAP_SHARED, fd,
+			      (off_t)(offset - pg_offset))) == (char *)-1) {
+		prterr("doflush: mmap");
+		report_failure(202);
+	}
+	if (msync(p, map_size, MS_INVALIDATE) != 0) {
+		prterr("doflush: msync");
+		report_failure(203);
+	}
+	if (munmap(p, map_size) != 0) {
+		prterr("doflush: munmap");
+		report_failure(204);
+	}
+}
 
 void
 dowrite(unsigned offset, unsigned size)
@@ -886,6 +1009,9 @@ dowrite(unsigned offset, unsigned size)
 			prt("fsync() failed: %s\n", strerror(errno));
 			report_failure(152);
 		}
+	}
+	if (flush) {
+		doflush(fd, offset, size);
 	}
 }
 
@@ -965,7 +1091,7 @@ domapwrite(unsigned offset, unsigned size)
 		gettimeofday(&t, NULL);
 		prt("       %lu.%06lu memcpy done\n", t.tv_sec, t.tv_usec);
 	}
-	if (msync(p, map_size, 0) != 0) {
+	if (msync(p, map_size, MS_SYNC) != 0) {
 		prterr("domapwrite: msync");
 		report_failure(203);
 	}
@@ -976,6 +1102,9 @@ domapwrite(unsigned offset, unsigned size)
 		gettimeofday(&t, NULL);
 		prt("       %lu.%06lu msync done\n", t.tv_sec, t.tv_usec);
 	}
+
+	check_eofpage("Write", offset, p, size);
+
 	if (munmap(p, map_size) != 0) {
 		prterr("domapwrite: munmap");
 		report_failure(204);
@@ -1028,6 +1157,134 @@ dotruncate(unsigned size)
 	}
 }
 
+#ifdef FALLOC_FL_PUNCH_HOLE
+void
+do_punch_hole(unsigned offset, unsigned length)
+{
+	struct timeval t;
+	int max_offset = 0;
+	int max_len = 0;
+	struct test_file *tf = get_tf();
+	int fd = tf->fd;
+	int mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE;
+
+	gettimeofday(&t, NULL);
+	if (length == 0) {
+		if (!quiet && testcalls > simulatedopcount)
+			prt("skipping zero length punch hole\n");
+		log4(OP_SKIPPED, OP_PUNCH_HOLE, offset, length, &t);
+		return;
+	}
+
+	if (file_size <= (loff_t)offset) {
+		if (!quiet && testcalls > simulatedopcount)
+			prt("skipping hole punch off the end of the file\n");
+		log4(OP_SKIPPED, OP_PUNCH_HOLE, offset, length, &t);
+		return;
+	}
+
+	log4(OP_PUNCH_HOLE, offset, length, 0, &t);
+
+	if (testcalls <= simulatedopcount)
+		return;
+
+	output_line(tf, OP_PUNCH_HOLE, offset, length, &t);
+
+	if (fallocate(fd, mode, (loff_t)offset, (loff_t)length) == -1) {
+		prt("punch hole: %x to %x\n", offset, length);
+		prterr("do_punch_hole: fallocate");
+		report_failure(161);
+	}
+	if (!quiet && (debug > 1 &&
+		        (monitorstart == -1 ||
+			 (offset + length > monitorstart &&
+			  (monitorend == -1 || offset <= monitorend))))) {
+		gettimeofday(&t, NULL);
+		prt("       %lu.%06lu punch done\n", t.tv_sec, t.tv_usec);
+	}
+
+	max_offset = offset < file_size ? offset : file_size;
+	max_len = max_offset + length <= file_size ? length :
+			file_size - max_offset;
+	memset(good_buf + max_offset, '\0', max_len);
+}
+#else /* !FALLOC_FL_PUNCH_HOLE */
+void
+do_punch_hole(unsigned offset, unsigned length)
+{
+	return;
+}
+#endif /* !FALLOC_FL_PUNCH_HOLE */
+
+#ifdef FALLOCATE
+/* fallocate is basically a no-op unless extending, then a lot like a
+ * truncate */
+void
+do_preallocate(unsigned offset, unsigned length)
+{
+	struct timeval t;
+	struct test_file *tf = get_tf();
+	int fd = tf->fd;
+	unsigned end_offset;
+	int keep_size;
+
+	gettimeofday(&t, NULL);
+        if (length == 0) {
+                if (!quiet && testcalls > simulatedopcount)
+                        prt("skipping zero length fallocate\n");
+                log4(OP_SKIPPED, OP_FALLOCATE, offset, length, &t);
+                return;
+        }
+
+	keep_size = random() % 2;
+
+	end_offset = keep_size ? 0 : offset + length;
+
+	if (end_offset > biggest) {
+		biggest = end_offset;
+		if (!quiet && testcalls > simulatedopcount)
+			prt("fallocating to largest ever: 0x%x\n", end_offset);
+	}
+
+	/*
+	 * last arg matches fallocate string array index in logdump:
+	 * 	0: allocate past EOF
+	 * 	1: extending prealloc
+	 * 	2: interior prealloc
+	 */
+	log4(OP_FALLOCATE, offset, length,
+	     (end_offset > file_size) ? (keep_size ? 0 : 1) : 2, &t);
+
+	if (end_offset > file_size) {
+		memset(good_buf + file_size, '\0', end_offset - file_size);
+		file_size = end_offset;
+	}
+
+	if (testcalls <= simulatedopcount)
+		return;
+
+	output_line(tf, OP_FALLOCATE, offset, length, &t);
+
+	if (fallocate(fd, keep_size ? FALLOC_FL_KEEP_SIZE : 0, (loff_t)offset, (loff_t)length) == -1) {
+	        prt("fallocate: %x to %x\n", offset, length);
+		prterr("do_preallocate: fallocate");
+		report_failure(161);
+	}
+	if (!quiet && (debug > 1 &&
+		        (monitorstart == -1 ||
+			 (offset + length > monitorstart &&
+			  (monitorend == -1 || offset <= monitorend))))) {
+		gettimeofday(&t, NULL);
+		prt("       %lu.%06lu falloc done\n", t.tv_sec, t.tv_usec);
+	}
+}
+#else /* !FALLOCATE */
+void
+do_preallocate(unsigned offset, unsigned length)
+{
+	return;
+}
+#endif /* !FALLOCATE */
 
 void
 writefileimage()
@@ -1091,6 +1348,15 @@ docloseopen(void)
 	}
 }
 
+#define TRIM_OFF_LEN(off, len, size)	\
+do {					\
+	if (size)			\
+		(off) %= (size);	\
+	else				\
+		(off) = 0;		\
+	if ((off) + (len) > (size))	\
+		(len) = (size) - (off);	\
+} while (0)
 
 void
 test(void)
@@ -1098,12 +1364,7 @@ test(void)
 	unsigned long	offset;
 	unsigned long	size = maxoplen;
 	unsigned long	rv = random();
-	unsigned long	op = rv % (3 + !lite + mapped_writes);
-
-        /* turn off the map read if necessary */
-
-        if (op == 2 && !mapped_reads)
-            op = 0;
+	unsigned long	op;
 
 	if (simulatedopcount > 0 && testcalls == simulatedopcount)
 		writefileimage();
@@ -1116,44 +1377,86 @@ test(void)
 	if (!quiet && testcalls < simulatedopcount && testcalls % 100000 == 0)
 		prt("%lu...\n", testcalls);
 
-	/*
-	 * READ:	op = 0
-	 * WRITE:	op = 1
-	 * MAPREAD:     op = 2
-	 * TRUNCATE:	op = 3
-	 * MAPWRITE:    op = 3 or 4
-	 */
-	if (lite ? 0 : op == 3 && (style & 1) == 0) /* vanilla truncate? */
-		dotruncate(random() % maxfilelen);
-	else {
-		if (randomoplen)
-			size = random() % (maxoplen+1);
-		if (lite ? 0 : op == 3)
-			dotruncate(size);
-		else {
-			offset = random();
-			if (op == 1 || op == (lite ? 3 : 4)) {
-				offset %= maxfilelen;
-				if (offset + size > maxfilelen)
-					size = maxfilelen - offset;
-				if (op != 1)
-					domapwrite(offset, size);
-				else
-					dowrite(offset, size);
-			} else {
-				if (file_size)
-					offset %= file_size;
-				else
-					offset = 0;
-				if (offset + size > file_size)
-					size = file_size - offset;
-				if (op != 0)
-					domapread(offset, size);
-				else
-					doread(offset, size);
-			}
+	offset = random();
+	if (randomoplen)
+		size = random() % (maxoplen + 1);
+
+	/* calculate appropriate op to run */
+	if (lite)
+		op = rv % OP_MAX_LITE;
+	else
+		op = rv % OP_MAX_FULL;
+
+	switch (op) {
+	case OP_MAPREAD:
+		if (!mapped_reads)
+			op = OP_READ;
+		break;
+	case OP_MAPWRITE:
+		if (!mapped_writes)
+			op = OP_WRITE;
+		break;
+	case OP_FALLOCATE:
+		if (!fallocate_calls) {
+			struct timeval t;
+			gettimeofday(&t, NULL);
+			log4(OP_SKIPPED, OP_FALLOCATE, offset, size, &t);
+			goto out;
 		}
+		break;
+	case OP_PUNCH_HOLE:
+		if (!punch_hole_calls) {
+			struct timeval t;
+			gettimeofday(&t, NULL);
+			log4(OP_SKIPPED, OP_PUNCH_HOLE, offset, size, &t);
+			goto out;
+		}
+		break;
 	}
+
+	switch (op) {
+	case OP_READ:
+		TRIM_OFF_LEN(offset, size, file_size);
+		doread(offset, size);
+		break;
+
+	case OP_WRITE:
+		TRIM_OFF_LEN(offset, size, maxfilelen);
+		dowrite(offset, size);
+		break;
+
+	case OP_MAPREAD:
+		TRIM_OFF_LEN(offset, size, file_size);
+		domapread(offset, size);
+		break;
+
+	case OP_MAPWRITE:
+		TRIM_OFF_LEN(offset, size, maxfilelen);
+		domapwrite(offset, size);
+		break;
+
+	case OP_TRUNCATE:
+		if (!style)
+			size = random() % maxfilelen;
+		dotruncate(size);
+		break;
+
+	case OP_FALLOCATE:
+		TRIM_OFF_LEN(offset, size, maxfilelen);
+		do_preallocate(offset, size);
+		break;
+
+	case OP_PUNCH_HOLE:
+		TRIM_OFF_LEN(offset, size, file_size);
+		do_punch_hole(offset, size);
+		break;
+	default:
+		prterr("test: unknown operation");
+		report_failure(42);
+		break;
+	}
+
+out:
 	if (sizechecks && testcalls > simulatedopcount)
 		check_size();
 	if (closeprob && (rv >> 3) < (1 << 28) / closeprob)
@@ -1176,14 +1479,15 @@ void
 usage(void)
 {
 	fprintf(stdout, "usage: %s",
-		"fsx [-dnqLOW] [-b opnum] [-c Prob] [-l flen] [-m "
-"start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t "
-"truncbdy] [-w writebdy] [-D startingop] [-N numops] [-P dirpath] [-S seed] "
-"[ -I random|rotate ] fname [additional paths to fname..]\n"
+		"fsx [-dfynqLAFHOWZT] [-b opnum] [-c Prob] [-l flen] "
+"[-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] "
+"[-t truncbdy] [-w writebdy] [-D startingop] [-N numops] [-P dirpath] "
+"[-S seed] [ -I random|rotate ] fname [additional paths to fname..]\n"
 "	-b opnum: beginning operation number (default 1)\n"
 "	-c P: 1 in P chance of file close+open at each op (default infinity)\n"
 "	-d: debug output for all operations [-d -d = more debugging]\n"
 "	-f: fsync() after each write calls\n"
+"	-y flush and invalidate cache after I/O\n"
 "	-l flen: the upper bound on file size (default 262144)\n"
 "	-m start:end: monitor (print debug) specified byte range (default 0:infinity)\n"
 "	-n: no verifications of file size\n"
@@ -1197,6 +1501,12 @@ usage(void)
 "	-D startingop: debug output starting at specified operation\n"
 "	-L: fsxLite - no file creations & no file size changes\n"
 "	-A: Use the AIO system calls\n"
+#ifdef FALLOCATE
+"	-F: Do not use fallocate (preallocation) calls\n"
+#endif
+#ifdef FALLOC_FL_PUNCH_HOLE
+"	-H: Do not use punch hole calls\n"
+#endif
 "	-N numops: total # operations to do (default infinity)\n"
 "	-O: use oplen (see -o flag) for every op (default random)\n"
 "	-P: save .fsxlog and .fsxgood files in dirpath (default ./)\n"
@@ -1207,7 +1517,7 @@ usage(void)
 "	    a different path.  Iterate through them in order with 'rotate'\n"
 "	    or chose then at 'random'.  (defaults to random)\n"
 "	-Z: O_DIRECT (use -R, -W, -r and -w too)\n"
-"	-F: use lseek()+write() instead of truncate()\n"
+"	-T: use lseek()+write() instead of truncate()\n"
 "	fname: this filename is REQUIRED (no default)\n");
 	exit(90);
 }
@@ -1247,7 +1557,6 @@ getnum(char *s, char **e)
 }
 
 #ifdef AIO
-
 #define QSZ     1024
 io_context_t	io_ctx;
 struct iocb 	iocb;
@@ -1271,6 +1580,7 @@ __aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset)
 	static struct timespec ts;
 	struct iocb *iocbs[] = { &iocb };
 	int ret;
+	long res;
 
 	if (rw == READ) {
 		io_prep_pread(&iocb, fd, buf, len, offset);
@@ -1285,21 +1595,48 @@ __aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset)
 		fprintf(stderr, "errcode=%d\n", ret);
 		fprintf(stderr, "aio_rw: io_submit failed: %s\n",
 				strerror(ret));
-		return(-1);
+		goto out_error;
 	}
 
 	ret = io_getevents(io_ctx, 1, 1, &event, &ts);
 	if (ret != 1) {
-		fprintf(stderr, "errcode=%d\n", ret);
-		fprintf(stderr, "aio_rw: io_getevents failed: %s\n",
-				 strerror(ret));
-		return -1;
+		if (ret == 0)
+			fprintf(stderr, "aio_rw: no events available\n");
+		else {
+			fprintf(stderr, "errcode=%d\n", -ret);
+			fprintf(stderr, "aio_rw: io_getevents failed: %s\n",
+				 	strerror(-ret));
+		}
+		goto out_error;
 	}
 	if (len != event.res) {
-		fprintf(stderr, "bad read length: %lu instead of %u\n",
-				event.res, len);
+		/*
+		 * The b0rked libaio defines event.res as unsigned.
+		 * However the kernel strucuture has it signed,
+		 * and it's used to pass negated error value.
+		 * Till the library is fixed use the temp var.
+		 */
+		res = (long)event.res;
+		if (res >= 0)
+			fprintf(stderr, "bad io length: %lu instead of %u\n",
+					res, len);
+		else {
+			fprintf(stderr, "errcode=%ld\n", -res);
+			fprintf(stderr, "aio_rw: async io failed: %s\n",
+					strerror(-res));
+			ret = res;
+			goto out_error;
+		}
 	}
 	return event.res;
+
+out_error:
+	/*
+	 * The caller expects error return in traditional libc
+	 * convention, i.e. -1 and the errno set to error.
+	 */
+	errno = -ret;
+	return -1;
 }
 
 int aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset)
@@ -1316,8 +1653,48 @@ int aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset)
 	}
 	return ret;
 }
+#endif /* !AIO */
 
+void
+test_fallocate()
+{
+#ifdef FALLOCATE
+	if (!lite && fallocate_calls) {
+		int fd = get_fd();
+
+		if (fallocate(fd, 0, 0, 1) && errno == EOPNOTSUPP) {
+			if(!quiet)
+				warn("main: filesystem does not support fallocate, disabling\n");
+			fallocate_calls = 0;
+		} else {
+			ftruncate(fd, 0);
+		}
+	}
+#else /* ! FALLOCATE */
+	fallocate_calls = 0;
 #endif
+
+}
+
+void
+test_punch_hole()
+{
+#ifdef FALLOC_FL_PUNCH_HOLE
+	if (!lite && punch_hole_calls) {
+		int fd = get_fd();
+
+		if (fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+				0, 1) && errno == EOPNOTSUPP) {
+			if(!quiet)
+				warn("main: filesystem does not support fallocate punch hole, disabling");
+			punch_hole_calls = 0;
+		} else
+			ftruncate(fd, 0);
+	}
+#else /* ! PUNCH HOLE */
+	punch_hole_calls = 0;
+#endif
+}
 
 int
 main(int argc, char **argv)
@@ -1331,11 +1708,12 @@ main(int argc, char **argv)
 
 	page_size = getpagesize();
 	page_mask = page_size - 1;
+	mmap_mask = page_mask;
 
 	setvbuf(stdout, (char *)0, _IOLBF, 0); /* line buffered stdout */
 
 	while ((ch = getopt(argc, argv,
-			    "b:c:dfl:m:no:p:qr:s:t:w:AD:I:LN:OP:RS:WZF"))
+			    "b:c:dfyl:m:no:p:qr:s:t:w:AD:I:FHLN:OP:RS:WZT"))
 	       != EOF)
 		switch (ch) {
 		case 'b':
@@ -1362,6 +1740,9 @@ main(int argc, char **argv)
 			break;
 		case 'f':
 			do_fsync = 1;
+			break;
+		case 'y':
+			flush = 1;
 			break;
 		case 'l':
 			maxfilelen = getnum(optarg, &endp);
@@ -1427,6 +1808,12 @@ main(int argc, char **argv)
 		case 'I':
 			assign_fd_policy(optarg);
 			break;
+		case 'F':
+			fallocate_calls = 0;
+			break;
+		case 'H':
+			punch_hole_calls = 0;
+			break;
 		case 'L':
 		        lite = 1;
 			break;
@@ -1465,7 +1852,7 @@ main(int argc, char **argv)
 		case 'Z':
 			o_direct = O_DIRECT;
 			break;
-		case 'F':
+		case 'T':
 		        no_truncate = 1;
 			break;
 
@@ -1567,6 +1954,9 @@ main(int argc, char **argv)
 	} else
 		check_trunc_hack();
 
+	test_fallocate();
+	test_punch_hole();
+
 	while (numops == -1 || numops--)
 		test();
 
@@ -1582,5 +1972,3 @@ main(int argc, char **argv)
 
 	return 0;
 }
-
- 	  	 

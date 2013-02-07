@@ -102,6 +102,7 @@ typedef struct opdesc {
 	opfnc_t	func;
 	int	freq;
 	int	iswrite;
+	int	isxfs;
 } opdesc_t;
 
 typedef struct fent {
@@ -178,41 +179,41 @@ void	unresvsp_f(int, long);
 void	write_f(int, long);
 
 opdesc_t	ops[] = {
-     /* { OP_ENUM, "name", function, freq, iswrite }, */
-	{ OP_ALLOCSP, "allocsp", allocsp_f, 1, 1 },
-	{ OP_ATTR_REMOVE, "attr_remove", attr_remove_f, /* 1 */ 0, 1 },
-	{ OP_ATTR_SET, "attr_set", attr_set_f, /* 2 */ 0, 1 },
-	{ OP_BULKSTAT, "bulkstat", bulkstat_f, 1, 0 },
-	{ OP_BULKSTAT1, "bulkstat1", bulkstat1_f, 1, 0 },
-	{ OP_CHOWN, "chown", chown_f, 3, 1 },
-	{ OP_CREAT, "creat", creat_f, 4, 1 },
-	{ OP_DREAD, "dread", dread_f, 4, 0 },
-	{ OP_DWRITE, "dwrite", dwrite_f, 4, 1 },
-	{ OP_FALLOCATE, "fallocate", fallocate_f, 1, 1 },
-	{ OP_FDATASYNC, "fdatasync", fdatasync_f, 1, 1 },
-	{ OP_FIEMAP, "fiemap", fiemap_f, 1, 1 },
-	{ OP_FREESP, "freesp", freesp_f, 1, 1 },
-	{ OP_FSYNC, "fsync", fsync_f, 1, 1 },
-	{ OP_GETATTR, "getattr", getattr_f, 1, 0 },
-	{ OP_GETDENTS, "getdents", getdents_f, 1, 0 },
-	{ OP_LINK, "link", link_f, 1, 1 },
-	{ OP_MKDIR, "mkdir", mkdir_f, 2, 1 },
-	{ OP_MKNOD, "mknod", mknod_f, 2, 1 },
-	{ OP_PUNCH, "punch", punch_f, 1, 1 },
-	{ OP_READ, "read", read_f, 1, 0 },
-	{ OP_READLINK, "readlink", readlink_f, 1, 0 },
-	{ OP_RENAME, "rename", rename_f, 2, 1 },
-	{ OP_RESVSP, "resvsp", resvsp_f, 1, 1 },
-	{ OP_RMDIR, "rmdir", rmdir_f, 1, 1 },
-	{ OP_SETATTR, "setattr", setattr_f, 0, 1 },
-	{ OP_SETXATTR, "setxattr", setxattr_f, 1, 1 },
-	{ OP_STAT, "stat", stat_f, 1, 0 },
-	{ OP_SYMLINK, "symlink", symlink_f, 2, 1 },
-	{ OP_SYNC, "sync", sync_f, 1, 1 },
-	{ OP_TRUNCATE, "truncate", truncate_f, 2, 1 },
-	{ OP_UNLINK, "unlink", unlink_f, 1, 1 },
-	{ OP_UNRESVSP, "unresvsp", unresvsp_f, 1, 1 },
-	{ OP_WRITE, "write", write_f, 4, 1 },
+     /* { OP_ENUM, "name", function, freq, iswrite, isxfs }, */
+	{ OP_ALLOCSP, "allocsp", allocsp_f, 1, 1, 1 },
+	{ OP_ATTR_REMOVE, "attr_remove", attr_remove_f, /* 1 */ 0, 1, 0 },
+	{ OP_ATTR_SET, "attr_set", attr_set_f, /* 2 */ 0, 1, 0 },
+	{ OP_BULKSTAT, "bulkstat", bulkstat_f, 1, 0, 1 },
+	{ OP_BULKSTAT1, "bulkstat1", bulkstat1_f, 1, 0, 1 },
+	{ OP_CHOWN, "chown", chown_f, 3, 1, 0 },
+	{ OP_CREAT, "creat", creat_f, 4, 1, 0 },
+	{ OP_DREAD, "dread", dread_f, 4, 0, 0 },
+	{ OP_DWRITE, "dwrite", dwrite_f, 4, 1, 0 },
+	{ OP_FALLOCATE, "fallocate", fallocate_f, 1, 1, 0 },
+	{ OP_FDATASYNC, "fdatasync", fdatasync_f, 1, 1, 0 },
+	{ OP_FIEMAP, "fiemap", fiemap_f, 1, 1, 0 },
+	{ OP_FREESP, "freesp", freesp_f, 1, 1, 1 },
+	{ OP_FSYNC, "fsync", fsync_f, 1, 1, 0 },
+	{ OP_GETATTR, "getattr", getattr_f, 1, 0, 0 },
+	{ OP_GETDENTS, "getdents", getdents_f, 1, 0, 0 },
+	{ OP_LINK, "link", link_f, 1, 1, 0 },
+	{ OP_MKDIR, "mkdir", mkdir_f, 2, 1, 0 },
+	{ OP_MKNOD, "mknod", mknod_f, 2, 1, 0 },
+	{ OP_PUNCH, "punch", punch_f, 1, 1, 0 },
+	{ OP_READ, "read", read_f, 1, 0, 0 },
+	{ OP_READLINK, "readlink", readlink_f, 1, 0, 0 },
+	{ OP_RENAME, "rename", rename_f, 2, 1, 0 },
+	{ OP_RESVSP, "resvsp", resvsp_f, 1, 1, 1 },
+	{ OP_RMDIR, "rmdir", rmdir_f, 1, 1, 0 },
+	{ OP_SETATTR, "setattr", setattr_f, 0, 1, 0 },
+	{ OP_SETXATTR, "setxattr", setxattr_f, 1, 1, 1 },
+	{ OP_STAT, "stat", stat_f, 1, 0, 0 },
+	{ OP_SYMLINK, "symlink", symlink_f, 2, 1, 0 },
+	{ OP_SYNC, "sync", sync_f, 1, 1, 0 },
+	{ OP_TRUNCATE, "truncate", truncate_f, 2, 1, 0 },
+	{ OP_UNLINK, "unlink", unlink_f, 1, 1, 0 },
+	{ OP_UNRESVSP, "unresvsp", unresvsp_f, 1, 1, 1 },
+	{ OP_WRITE, "write", write_f, 4, 1, 0 },
 }, *ops_end;
 
 flist_t	flist[FT_nft] = {
@@ -247,6 +248,11 @@ unsigned long	seed = 0;
 ino_t		top_ino;
 int		verbose = 0;
 sig_atomic_t	should_stop = 0;
+#ifdef NO_XFS
+int		no_xfs = 1;
+#else
+int		no_xfs = 0;
+#endif
 
 void	add_to_flist(int, int, int);
 void	append_pathname(pathname_t *, char *);
@@ -290,6 +296,7 @@ int	unlink_path(pathname_t *);
 void	usage(void);
 void	write_freq(void);
 void	zero_freq(void);
+void	noxfs_freq(void);
 
 void sg_handler(int signum)
 {
@@ -319,7 +326,11 @@ int main(int argc, char **argv)
 	nops = sizeof(ops) / sizeof(ops[0]);
 	ops_end = &ops[nops];
 	myprog = argv[0];
-	while ((c = getopt(argc, argv, "d:e:f:i:m:M:n:o:p:rs:S:vwzH")) != -1) {
+
+	if (no_xfs)
+		noxfs_freq();
+
+	while ((c = getopt(argc, argv, "d:e:f:i:m:M:n:o:p:rs:S:vwzXH")) != -1) {
 		switch (c) {
 		case 'd':
 			dirname = optarg;
@@ -390,6 +401,10 @@ int main(int argc, char **argv)
 			printf("\n");
                         nousage=1;
 			break;
+		case 'X':
+			no_xfs = 1;
+			noxfs_freq();
+			break;
 		case '?':
 			fprintf(stderr, "%s - invalid parameters\n",
 				myprog);
@@ -441,12 +456,14 @@ int main(int argc, char **argv)
 		seed = (int)t.tv_sec ^ (int)t.tv_usec;
 		printf("seed = %ld\n", seed);
 	}
-	i = xfsctl(buf, fd, XFS_IOC_FSGEOMETRY, &geom);
-	if (i >= 0 && geom.rtblocks)
-		rtpct = MIN(MAX(geom.rtblocks * 100 /
+
+	rtpct = 0;
+	if (!no_xfs) {
+		i = xfsctl(buf, fd, XFS_IOC_FSGEOMETRY, &geom);
+		if (i >= 0 && geom.rtblocks)
+			rtpct = MIN(MAX(geom.rtblocks * 100 /
 				(geom.rtblocks + geom.datablocks), 1), 99);
-	else
-		rtpct = 0;
+	}
 	if (errtag != 0) {
 		if (errrange == 0) {
 			if (errtag <= 0) {
@@ -467,12 +484,19 @@ int main(int argc, char **argv)
 
 			errtag += (random() % (XFS_ERRTAG_MAX - errtag));
 		}
+
+		if (no_xfs) {
+			fprintf(stderr, "error injection only works on XFS\n");
+			goto injection_error;
+		}
+
 		printf("Injecting failure on tag #%d\n", errtag);
 		err_inj.errtag = errtag;
 		err_inj.fd = fd;
 		srval = xfsctl(buf, fd, XFS_IOC_ERROR_INJECTION, &err_inj);
 		if (srval < -1) {
 			perror("fsstress - XFS_SYSSGI error injection call");
+injection_error:
 			close(fd);
 			unlink(buf);
 			exit(1);
@@ -1486,6 +1510,7 @@ usage(void)
 	printf("   -z               zeros frequencies of all operations\n");
 	printf("   -S [c,t]         prints the list of operations (omitting zero frequency) in command line or table style\n");
 	printf("   -H               prints usage and exits\n");
+	printf("   -X               don't do anything XFS specific (default with -DNO_XFS)\n");
 }
 
 void
@@ -1506,6 +1531,16 @@ zero_freq(void)
 
 	for (p = ops; p < ops_end; p++)
 		p->freq = 0;
+}
+
+void noxfs_freq(void)
+{
+	opdesc_t	*p;
+
+	for (p = ops; p < ops_end; p++) {
+		if (p->isxfs)
+			p->freq = 0;
+	}
 }
 
 void inode_info(char *str, size_t sz, struct stat64 *s, int verbose)
@@ -1943,6 +1978,13 @@ dread_f(int opno, long r)
 		close(fd);
 		return;
 	}
+	if (no_xfs) {
+		/* FIXME: good number? */
+		diob.d_miniosz	= stb.st_blksize;
+		diob.d_maxiosz	= stb.st_blksize * 256;
+		diob.d_mem	= stb.st_blksize;
+		goto skip_dioinfo;
+	}
 	if (xfsctl(f.path, fd, XFS_IOC_DIOINFO, &diob) < 0) {
 		if (v)
 			printf(
@@ -1952,6 +1994,7 @@ dread_f(int opno, long r)
 		close(fd);
 		return;
 	}
+skip_dioinfo:
 	align = (__int64_t)diob.d_miniosz;
 	lr = ((__int64_t)random() << 32) + random();
 	off = (off64_t)(lr % stb.st_size);
@@ -2015,6 +2058,13 @@ dwrite_f(int opno, long r)
 		return;
 	}
 	inode_info(st, sizeof(st), &stb, v);
+	if (no_xfs) {
+		/* FIXME: good number? */
+		diob.d_miniosz	= stb.st_blksize;
+		diob.d_maxiosz	= stb.st_blksize * 256;
+		diob.d_mem	= stb.st_blksize;
+		goto skip_dioinfo;
+	}
 	if (xfsctl(f.path, fd, XFS_IOC_DIOINFO, &diob) < 0) {
 		if (v)
 			printf("%d/%d: dwrite - xfsctl(XFS_IOC_DIOINFO)"
@@ -2024,6 +2074,7 @@ dwrite_f(int opno, long r)
 		close(fd);
 		return;
 	}
+skip_dioinfo:
 	align = (__int64_t)diob.d_miniosz;
 	lr = ((__int64_t)random() << 32) + random();
 	off = (off64_t)(lr % MIN(stb.st_size + (1024 * 1024), MAXFSIZE));

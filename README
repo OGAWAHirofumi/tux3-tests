@@ -1,0 +1,36 @@
+Build test tools
+================
+
+Main test script
+----------------
+Main test script is
+
+    tests/test.sh
+
+And it runs as following on test machine
+
+    $ cd tests
+    $ ./tests  <tux3 command path> <block device for test>
+
+Test tools
+----------
+- fsstress
+    Based on xfstests-dev, and supports to skip XFS specific operations.
+- fsx-linux
+    Based on LTP, and merge several changes by individual person
+
+Make test archive
+-----------------
+
+    $ make
+
+Deploy to buildbot master
+-------------------------
+Buildslave download test tools from <master-dir>/guest-images/
+
+    $ mv tests.tar.xz to <master-dir>/guest-images/tests-<arch>.tar.xz
+
+TODO
+----
+- Add more test
+- Adjust test parameters for whole test time

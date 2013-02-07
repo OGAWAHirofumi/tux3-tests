@@ -1,0 +1,5 @@
+# ignore binaries
+tests/bin/*
+# ignore downloaded directories
+ltp
+xfstests-dev

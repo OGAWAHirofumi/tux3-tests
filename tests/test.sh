@@ -116,8 +116,8 @@ for blocksize in 512 4096; do
     # -F no fallocate
     # -H no punch hole
     SIZE=$((200 * 1024 * 1024))
-#    NUM_OP=$((2000000 * 24))
-    NUM_OP=$((2000000 * 2))
+#    NUM_OP=$((1500000 * 24))
+    NUM_OP=$((1500000 * 2))
 
     mount_tux3
     run_test -b fsx-linux	\
@@ -130,12 +130,13 @@ for blocksize in 512 4096; do
 
     # fsstress
 #    NUM_LOOPS=12
-    NUM_LOOPS=1
+    NUM_LOOPS=2
     for i in $(seq $NUM_LOOPS); do
-	NUM_OPS=$((250000 * 2))
+	# Too big number can be ENOSPC
+	NUM_OPS=$((150000 * 2))
 	NUM_PROCESS=3
 
-	echo "===== fsstress ($i) ===="
+	echo "======== fsstress ($i) ========"
 	mount_tux3
 	run_test rm -rf $TUX3_MNT/fsstress
 	run_test -b fsstress		\

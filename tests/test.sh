@@ -101,7 +101,7 @@ old_panic_on_oops=$(cat /proc/sys/kernel/panic_on_oops)
 echo 1 > /proc/sys/kernel/panic_on_oops
 
 # Copy command to dir in PATH
-mv $TUX3_CMD bin
+cp $TUX3_CMD bin
 
 TUX3_MNT="$TOPDIR/mnt"
 

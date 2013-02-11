@@ -2,4 +2,5 @@
 tests/bin/*
 # ignore downloaded directories
 ltp
+xfstests
 xfstests-dev

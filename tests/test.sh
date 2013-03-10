@@ -138,7 +138,7 @@ for blocksize in 512 4096; do
 
 	echo "======== fsstress ($i) ========"
 	mount_tux3
-	run_test rm -rf $TUX3_MNT/fsstress
+	run_test -b rm -rf $TUX3_MNT/fsstress
 	run_test -b fsstress		\
 	    -n $NUM_OPS			\
 	    -p $NUM_PROCESS		\

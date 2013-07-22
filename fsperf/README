@@ -1,0 +1,43 @@
+FS performace measure scripts
+=============================
+
+Scripts
+-------
+
+fsperf.pl        - Collect and analyze performance data
+fsperf_sched.pl  - Summarize sleep of process scheduler
+
+Example of usage
+----------------
+
+1) Collect performance data
+
+    $ fsperf.pl record -d /dev/sdb2 -- dd if=/dev/zero of=/mnt/file count=100
+
+This collects performance data of "scheduler" and "I/O"
+
+2) Summarize performance data
+
+Make graphs for I/O and pid 4256
+
+    $ fsperf.pl report -p 4256
+
+Make log for scheduler sleep
+
+    $ perf script -k vmlinux -i dir/name.perf.data -f comm,tid,cpu,time,event,trace,ip,sym,symoff | fsperf_sched.pl > name.sched.log
+
+Output files
+------------
+
+name.sched.log           - How long is sleeping, where is sleeping.
+fsperf-block.log         - Log of I/O
+fsperf-sched.log         - Log of scheduler time
+*_summary.png            - PNG image that some graphs is combined
+fsperf-output/.color.gp  - gnuplot script to modify color of graph
+fsperf-output/*.gp       - gnuplot script to make graph
+fsperf-output/*.dat      - data file for gnuplot script
+
+
+Acknowledgements
+================
+Thanks seekwatch for inspiring me.

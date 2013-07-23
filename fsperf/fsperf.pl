@@ -314,7 +314,7 @@ sub output_plot_summary($$)
 		   fname_plot_seek_step($dev, "c")
 		  );
     # Add schedule plot if need
-    if ($need_sched) {
+    if ($need_sched and scalar(@target_pid)) {
 	my @sched_gp = map { fname_plot_sched($_); } @target_pid;
 	push(@plot_gp, @sched_gp);
     }
@@ -1835,10 +1835,8 @@ EOF
     close($log);
 
     # Create summary plot
-    if (scalar(@target_pid)) {
-	foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {
-	    output_plot_summary($dev, 1);
-	}
+    foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {
+	output_plot_summary($dev, 1);
     }
 }
 

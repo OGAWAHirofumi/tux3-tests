@@ -513,7 +513,7 @@ sub output_plot_qdepth($)
 		    "set yrange [0:]");
 
     print $fh <<"EOF";
-'$datafile' using 1:2 \"%lf %lf\" title \"Depth\" with lines
+'$datafile' using 1:2 title \"Depth\" with lines
 EOF
 
     output_plot_post($fh);
@@ -552,7 +552,7 @@ sub output_plot_lat_x2c($$$)
 		    "set yrange [0:]");
 
     print $fh <<"EOF";
-'$datafile' using 1:2 \"%lf %lf\" title \"${label}\" with impulses
+'$datafile' using 1:2 title \"${label}\" with impulses
 EOF
 
     output_plot_post($fh);
@@ -609,7 +609,7 @@ sub output_plot_seek_nr($$)
 		    "set yrange [0:]");
 
     print $fh <<"EOF";
-'$datafile' using 1:2 \"%lf %lf\" title \"Seeks\" with lines
+'$datafile' using 1:2 title \"Seeks\" with lines
 EOF
 
     output_plot_post($fh);

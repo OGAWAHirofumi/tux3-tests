@@ -454,6 +454,7 @@ sub output_plot_mbps($)
 
     output_plot_pre($fh, "Throughput",
 		    "Time (secs)", "MB/s",
+		    "set yrange [0:]",
 		    "",
 		    "to_mb(blk) = (blk * 512) / (1024 * 1024)");
 
@@ -481,7 +482,8 @@ sub output_plot_iops($)
     my $fh = create_file($fname, 0755);
 
     output_plot_pre($fh, "IO/s",
-		    "Time (secs)", "IO/s");
+		    "Time (secs)", "IO/s",
+		    "set yrange [0:]");
 
     print $fh <<"EOF";
 '$datafile' using 1:2 title "I/O" with lines
@@ -507,7 +509,8 @@ sub output_plot_qdepth($)
     my $fh = create_file($fname, 0755);
 
     output_plot_pre($fh, "Queue Depth",
-		    "Time (secs)", "Queue Depth (Number of BIOs)");
+		    "Time (secs)", "Queue Depth (Number of BIOs)",
+		    "set yrange [0:]");
 
     print $fh <<"EOF";
 '$datafile' using 1:2 \"%lf %lf\" title \"Depth\" with lines
@@ -545,7 +548,8 @@ sub output_plot_lat_x2c($$$)
     my $label = sprintf("%s2C", $shortname);
 
     output_plot_pre($fh, $title,
-		    "Time (secs)", "Latency time (secs)");
+		    "Time (secs)", "Latency time (secs)",
+		    "set yrange [0:]");
 
     print $fh <<"EOF";
 '$datafile' using 1:2 \"%lf %lf\" title \"${label}\" with impulses
@@ -601,7 +605,8 @@ sub output_plot_seek_nr($$)
     my $fh = create_file($fname, 0755);
 
     output_plot_pre($fh, "Number of Seeks - ($DIR_LONGNAME{$dir})",
-		    "Time (secs)", "Number of Seeks");
+		    "Time (secs)", "Number of Seeks",
+		    "set yrange [0:]");
 
     print $fh <<"EOF";
 '$datafile' using 1:2 \"%lf %lf\" title \"Seeks\" with lines

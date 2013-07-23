@@ -406,7 +406,7 @@ sub output_plot_bno($)
 
     my $fh = create_file($fname, 0755);
 
-    output_plot_pre($fh, "I/O Request Position",
+    output_plot_pre($fh, "I/O Position",
 		    "Time (secs)", "Disk offset (byte)",
 		    "set format y '%.1s %cB'",
 		    "set pointsize 0.5",
@@ -658,7 +658,7 @@ sub create_dev_datfile($$)
     return create_datfile($base);
 }
 
-# Output I/O request position info
+# Output I/O position info
 sub add_bno(@)
 {
     my ($dir,
@@ -673,7 +673,7 @@ sub add_bno(@)
 	$stats{$dev}{$fname} = create_dev_datfile($dev, $fname);
     }
 
-    # Output I/O request position per read or write
+    # Output I/O position per read or write
     my $fh = $stats{$dev}{$fname};
     print $fh time_str($common_secs, $common_nsecs), " $sector ",
 	$sector + $nr_sector, "\n";
@@ -1429,7 +1429,7 @@ sub output_plot_sched($$)
     my $ylen = 0.025;
     my $ymin = $ylow - 0.1;
     my $ymax = 1.1;
-    output_plot_pre($fh, "$pid ($comm) Schedule",
+    output_plot_pre($fh, "Task $pid ($comm) Schedule",
 		    "Time (secs)", "Schedule Time (secs)",
 		    "set yrange [$ymin:$ymax]",
 		    "set ytics 0,0.1,1",

@@ -452,7 +452,7 @@ sub output_plot_mbps($)
 
     my $fh = create_file($fname, 0755);
 
-    output_plot_pre($fh, "Thoughput",
+    output_plot_pre($fh, "Throughput",
 		    "Time (secs)", "MB/s",
 		    "",
 		    "to_mb(blk) = (blk * 512) / (1024 * 1024)");
@@ -1958,8 +1958,6 @@ Options:
  -d, --device=DEV        Record events only for DEV.
                          Accepts multiple times (e.g. -d /dev/sda -d /dev/sdb)
  -h, --help              This help.
-
-Cmdline:
 
 EOF
 

@@ -406,7 +406,7 @@ sub output_plot_bno($)
 
     my $fh = create_file($fname, 0755);
 
-    output_plot_pre($fh, "Block Accesses",
+    output_plot_pre($fh, "I/O Request Position",
 		    "Time (secs)", "Disk offset (byte)",
 		    "set format y '%.1s %cB'",
 		    "set pointsize 0.5",
@@ -658,7 +658,7 @@ sub create_dev_datfile($$)
     return create_datfile($base);
 }
 
-# Output block access info
+# Output I/O request position info
 sub add_bno(@)
 {
     my ($dir,
@@ -673,7 +673,7 @@ sub add_bno(@)
 	$stats{$dev}{$fname} = create_dev_datfile($dev, $fname);
     }
 
-    # Output block access per read or write
+    # Output I/O request position per read or write
     my $fh = $stats{$dev}{$fname};
     print $fh time_str($common_secs, $common_nsecs), " $sector ",
 	$sector + $nr_sector, "\n";

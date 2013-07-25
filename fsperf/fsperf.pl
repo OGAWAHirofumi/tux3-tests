@@ -1330,7 +1330,7 @@ sub block::block_rq_issue
     }
 
     my @normalized_args = @_;
-    delete($normalized_args[10]);
+    splice(@normalized_args, 10, 1);
 
     my $dir = get_dir($rwbs);
     if ($dir) {
@@ -1364,7 +1364,7 @@ sub block::block_rq_complete
     }
 
     my @normalized_args = @_;
-    delete($normalized_args[10]);
+    splice(@normalized_args, 10, 1);
 
     my $dir = get_dir($rwbs);
     if ($dir) {

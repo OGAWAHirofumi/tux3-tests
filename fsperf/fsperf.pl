@@ -129,6 +129,11 @@ sub tv64_str($)
     return time_str(to_sec($tv64), to_nsec($tv64));
 }
 
+sub pr_warn(@)
+{
+    warn "Warning: @_\n";
+}
+
 sub safe_system
 {
     print STDERR "Run command: @_\n";
@@ -376,9 +381,19 @@ my %DIR_LONGNAME = (
 		    "c" => "Combined"
 		   );
 
-sub get_dir($)
+sub make_io_str($$$$)
 {
-    my $rwbs = shift;
+    my ($tv64, $dir, $sector, $nr_sector) = @_;
+    my $time_str = tv64_str($tv64);
+    return "$time_str, $dir, $sector + $nr_sector";
+}
+
+sub get_dir(@)
+{
+    my ($event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm,
+	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
+
     my $dir;
 
     # Check direction
@@ -387,7 +402,11 @@ sub get_dir($)
     } elsif (index($rwbs, "W") >= 0) {
 	$dir = "w";
     } else {
-	print STDERR "Unknown direction: $rwbs\n";
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("Unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
     }
 
     return $dir;
@@ -785,7 +804,9 @@ sub add_frontmerge_pending(@)
 	}
     }
 
-    die "Couldn't find FrontMerge: $sector, $nr_sector\n";
+    my $devname = kdevname($dev);
+    die "Couldn't find FrontMerge: ($devname): ",
+	make_io_str($time, $dir, $sector, $nr_sector), "\n";
 }
 
 # Collect info of merge pending I/O
@@ -815,7 +836,9 @@ sub add_backmerge_pending(@)
 	}
     }
 
-    die "Couldn't find BackMerge: $sector, $nr_sector\n";
+    my $devname = kdevname($dev);
+    die "Couldn't find BackMerge: ($devname): ",
+	make_io_str($time, $dir, $sector, $nr_sector), "\n";
 }
 
 # Collect Issue(D) pending I/O
@@ -843,7 +866,9 @@ sub add_complete_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
 
     if (!defined($stats{$dev}{"pending"}{$sector})) {
-	warn "$event_name: Missing queue event: $sector, $nr_sector\n";
+	my $devname = kdevname($dev);
+	pr_warn("$event_name: Missing queue event: ($devname): ",
+		make_io_str($time, $dir, $sector, $nr_sector));
 	return;
     }
 
@@ -869,7 +894,9 @@ sub add_complete_pending(@)
 	}
     }
     if (!defined($q_time) or !defined($d_time)) {
-	die "$event_name: Found bogus I/O completion: $sector, $nr_sector\n";
+	my $devname = kdevname($dev);
+	die "$event_name: Found bogus I/O completion: ($devname): ",
+	    make_io_str($time, $dir, $sector, $nr_sector), "\n";
     }
     my $lat_q2c = $time - $q_time;
     my $lat_d2c = $time - $d_time;
@@ -1171,9 +1198,11 @@ EOF
 	    my $nr = $stats{$dev}{"pending"}{$s}{"nr"};
 	    my $q_time = $stats{$dev}{"pending"}{$s}{"Q"} || 0;
 	    my $d_time = $stats{$dev}{"pending"}{$s}{"D"} || 0;
-	    my $q_str = tv64_str($q_time);
 	    my $d_str = tv64_str($d_time);
-	    warn "Missing Pending I/O: $devname, $s, $nr, $q_str, $d_str\n";
+
+	    pr_warn("Missing Pending I/O: ($devname): ",
+		    make_io_str($q_time, "", $s, $nr),
+		    ", $d_str");
 	}
     }
 
@@ -1258,11 +1287,15 @@ sub block::block_bio_queue
 
     # Flush request?
     if ($nr_sector == 0) {
-	warn "$event_name: Ignore flush request: $sector, $nr_sector\n";
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore flush request: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
 	return;
     }
 
-    my $dir = get_dir($rwbs);
+    my $dir = get_dir(@_);
     if ($dir) {
 	add_bno($dir, @_);
 	add_queue_pending($dir, @_);
@@ -1277,7 +1310,7 @@ sub block::block_bio_frontmerge
 
     update_cur_time($common_secs, $common_nsecs);
 
-    my $dir = get_dir($rwbs);
+    my $dir = get_dir(@_);
     if ($dir) {
 	add_frontmerge_pending($dir, @_);
     }
@@ -1291,7 +1324,7 @@ sub block::block_bio_backmerge
 
     update_cur_time($common_secs, $common_nsecs);
 
-    my $dir = get_dir($rwbs);
+    my $dir = get_dir(@_);
     if ($dir) {
 	add_backmerge_pending($dir, @_);
     }
@@ -1325,14 +1358,18 @@ sub block::block_rq_issue
 
     # Flush request?
     if ($nr_sector == 0) {
-	warn "$event_name: Ignore flush request: $sector, $nr_sector\n";
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore flush request: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
 	return;
     }
 
     my @normalized_args = @_;
     splice(@normalized_args, 10, 1);
 
-    my $dir = get_dir($rwbs);
+    my $dir = get_dir(@normalized_args);
     if ($dir) {
 	add_bno($dir, @normalized_args);
 	add_seek($dir, @normalized_args);
@@ -1359,14 +1396,18 @@ sub block::block_rq_complete
 
     # Flush request?
     if ($nr_sector == 0) {
-	warn "$event_name: Ignore flush request: $sector, $nr_sector\n";
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore flush request: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
 	return;
     }
 
     my @normalized_args = @_;
     splice(@normalized_args, 10, 1);
 
-    my $dir = get_dir($rwbs);
+    my $dir = get_dir(@normalized_args);
     if ($dir) {
 	add_bno($dir, @normalized_args);
 	add_io($dir, @normalized_args);

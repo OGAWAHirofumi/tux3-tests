@@ -31,11 +31,11 @@ my $perf_block_data = "perf-block.data";
 my $output_dir = "fsperf-output";
 
 # less than this seek distance will be ignore
-my $seek_threshold = 0;
+my $opt_seek_threshold = 0;
 # 0: absolute distance, 1: relative distance
-my $seek_relative = 0;
+my $opt_seek_relative = 0;
 
-my @target_pid = ();
+my @opt_target_pid = ();
 my ($cur_time, $perf_start, $perf_end, $perf_xstart, $perf_xend);
 
 ##################################
@@ -319,8 +319,8 @@ sub output_plot_summary($$)
 		   fname_plot_seek_step($dev, "c")
 		  );
     # Add schedule plot if need
-    if ($need_sched and scalar(@target_pid)) {
-	my @sched_gp = map { fname_plot_sched($_); } @target_pid;
+    if ($need_sched and scalar(@opt_target_pid)) {
+	my @sched_gp = map { fname_plot_sched($_); } @opt_target_pid;
 	push(@plot_gp, @sched_gp);
     }
 
@@ -946,7 +946,7 @@ sub seek_distance($$$$)
 {
     my ($start, $end, $last_start, $last_end) = @_;
 
-    if (!$seek_relative) {
+    if (!$opt_seek_relative) {
 	# Absolute seek
 	return abs($last_end - $start);
     }
@@ -966,7 +966,7 @@ sub add_seek_distance($$$$$)
 	$distance = seek_distance($start, $end,
 				  $stats{$dev}{"last_start_$dir"},
 				  $stats{$dev}{"last_end_$dir"});
-	if ($distance > $seek_threshold) {
+	if ($distance > $opt_seek_threshold) {
 	    $stats{$dev}{"seek_nr_$dir"}[$cur_time]++;
 	    $stats{$dev}{"seek_distance_$dir"}[$cur_time] += $distance;
 	} else {
@@ -1541,7 +1541,7 @@ sub is_interesting_pid($)
 {
     my $pid = shift;
 
-    if (!scalar(@target_pid) or grep { $_ == $pid } @target_pid) {
+    if (!scalar(@opt_target_pid) or grep { $_ == $pid } @opt_target_pid) {
 	return 1;
     }
     return 0;
@@ -1943,9 +1943,9 @@ my %mode_table = (
 sub trace_begin
 {
     # Setup parameters from environment
-    @target_pid = split(/,/, $ENV{FSPERF_TARGET_PID});
-    $seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
-    $seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
+    @opt_target_pid = split(/,/, $ENV{FSPERF_TARGET_PID});
+    $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
+    $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
 }
 
 # Called from perf after all events was done
@@ -2201,8 +2201,8 @@ sub cmd_report
 
     my $ret = GetOptions(
 			 "pid=i"		=> \@opt_pid,
-			 "seek-threshold=i"	=> \$seek_threshold,
-			 "relative-seek"	=> \$seek_relative,
+			 "seek-threshold=i"	=> \$opt_seek_threshold,
+			 "relative-seek"	=> \$opt_seek_relative,
 			 "help"			=> \$help,
 			);
 
@@ -2212,8 +2212,8 @@ sub cmd_report
     $ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
     $ENV{FSPERF_SCRIPT} = $0;
     $ENV{FSPERF_TARGET_PID} = join(',',@opt_pid);
-    $ENV{FSPERF_SEEK_THRESHOLD} = $seek_threshold;
-    $ENV{FSPERF_SEEK_RELATIVE} = $seek_relative;
+    $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
+    $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;
 
     run_next_cmd();
 }

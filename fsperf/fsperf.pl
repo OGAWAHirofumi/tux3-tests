@@ -30,6 +30,8 @@ my $perf_sched_data = "perf-sched.data";
 my $perf_block_data = "perf-block.data";
 my $output_dir = "fsperf-output";
 
+# Don't exit even if sanity check found error
+my $opt_no_error = 0;
 # less than this seek distance will be ignore
 my $opt_seek_threshold = 0;
 # 0: absolute distance, 1: relative distance
@@ -740,6 +742,55 @@ sub update_qdepth($$$)
     print $fh  "$time_str " . $stats{$dev}{"qdepth"} . "\n";
 }
 
+# Sanity check of pending I/O in queue
+sub sanity_check_pending(@)
+{
+    my ($dir,
+	$event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm,
+	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
+
+    my %same;
+
+    foreach my $d ("r", "w") {
+	if ($stats{$dev}{"pending_$d"}) {
+	    foreach my $s (keys($stats{$dev}{"pending_$d"})) {
+		# Check if there is no same block address
+		if ($sector <= $s and $s < $sector + $nr_sector) {
+		    # There is same block address
+		    $same{$s}{"dir"} = $d;
+		    $same{$s}{"nr"} = $stats{$dev}{"pending_$d"}{$s}{"nr"};
+		    $same{$s}{"Q"} = $stats{$dev}{"pending_$d"}{$s}{"Q"};
+		}
+	    }
+	}
+    }
+
+    # If there was same block address, warn it
+    if (%same) {
+	my $prefix = "\n   ";
+
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+	my $str = "$prefix " . make_io_str($tv64, $dir, $sector, $nr_sector);
+
+	# Sort by Queue time
+	foreach my $s (sort { $same{$a}{"Q"} <=> $same{$b}{"Q"} } keys(%same)) {
+	    my $d = $same{$s}{"dir"};
+	    my $nr = $same{$s}{"nr"};
+
+	    $str .= "$prefix " . make_io_str($same{$s}{"Q"}, $d, $s, $nr);
+	}
+
+	pr_warn("Found same block address in queue ($devname):$str");
+	if (not $opt_no_error) {
+	    print STDERR
+		"If you want to ignore error, try `--no-error' option\n";
+	    exit(1);
+	}
+    }
+}
+
 # Collect Queue(Q) pending I/O
 sub add_queue_pending(@)
 {
@@ -750,30 +801,34 @@ sub add_queue_pending(@)
 
     my $time = to_tv64($common_secs, $common_nsecs);
 
+    # Sanity check of pending I/O in queue
+    sanity_check_pending(@_);
+
     # Save pending I/O
-    $stats{$dev}{"pending"}{$sector}{"Q"} = $time;
-    $stats{$dev}{"pending"}{$sector}{"nr"} = $nr_sector;
+    $stats{$dev}{"pending_$dir"}{$sector}{"Q"} = $time;
+    $stats{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
 
     # Update queue depth
     update_qdepth($dev, $time, 1);
 }
 
 # Update Queue pending I/O for merge
-sub update_pending($$$$)
+sub update_pending($$$$$)
 {
     my $dev = shift;
+    my $dir = shift;
     my $old_sector = shift;
     my $sector = shift;
     my $nr_sector = shift;
 
-    my $q_time = $stats{$dev}{"pending"}{$old_sector}{"Q"};
-    my $d_time = $stats{$dev}{"pending"}{$old_sector}{"D"};
-    delete($stats{$dev}{"pending"}{$old_sector});
+    my $q_time = $stats{$dev}{"pending_$dir"}{$old_sector}{"Q"};
+    my $d_time = $stats{$dev}{"pending_$dir"}{$old_sector}{"D"};
+    delete($stats{$dev}{"pending_$dir"}{$old_sector});
 
     # Update pending I/O
-    $stats{$dev}{"pending"}{$sector}{"Q"} = $q_time;
-    $stats{$dev}{"pending"}{$sector}{"D"} = $d_time;
-    $stats{$dev}{"pending"}{$sector}{"nr"} = $nr_sector;
+    $stats{$dev}{"pending_$dir"}{$sector}{"Q"} = $q_time;
+    $stats{$dev}{"pending_$dir"}{$sector}{"D"} = $d_time;
+    $stats{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
 }
 
 # Collect info of FrontMerge pending I/O
@@ -787,17 +842,17 @@ sub add_frontmerge_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
     my $sector_end = $sector + $nr_sector;
 
-    foreach my $s (keys($stats{$dev}{"pending"})) {
+    foreach my $s (keys($stats{$dev}{"pending_$dir"})) {
 	if ($sector_end == $s) {
-	    my $nr = $stats{$dev}{"pending"}{$s}{"nr"};
+	    my $nr = $stats{$dev}{"pending_$dir"}{$s}{"nr"};
 
 	    # Remove old pending I/O
-	    delete($stats{$dev}{"pending"}{$sector});
+	    delete($stats{$dev}{"pending_$dir"}{$sector});
 
 	    # Front merge
 	    $nr_sector += $nr;
 
-	    update_pending($dev, $s, $sector, $nr_sector);
+	    update_pending($dev, $dir, $s, $sector, $nr_sector);
 	    # Update queue depth
 	    update_qdepth($dev, $time, -1);
 	    return;
@@ -819,17 +874,17 @@ sub add_backmerge_pending(@)
 
     my $time = to_tv64($common_secs, $common_nsecs);
 
-    foreach my $s (keys($stats{$dev}{"pending"})) {
-	my $nr = $stats{$dev}{"pending"}{$s}{"nr"};
+    foreach my $s (keys($stats{$dev}{"pending_$dir"})) {
+	my $nr = $stats{$dev}{"pending_$dir"}{$s}{"nr"};
 
 	if ($s + $nr == $sector) {
 	    # Remove old pending I/O
-	    delete($stats{$dev}{"pending"}{$sector});
+	    delete($stats{$dev}{"pending_$dir"}{$sector});
 
 	    # Back merge
 	    $nr += $nr_sector;
 
-	    update_pending($dev, $s, $s, $nr);
+	    update_pending($dev, $dir, $s, $s, $nr);
 	    # Update queue depth
 	    update_qdepth($dev, $time, -1);
 	    return;
@@ -852,7 +907,7 @@ sub add_issue_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
 
     # Save pending I/O
-    $stats{$dev}{"pending"}{$sector}{"D"} = $time;
+    $stats{$dev}{"pending_$dir"}{$sector}{"D"} = $time;
 }
 
 # Complete(C) pending I/O
@@ -865,7 +920,7 @@ sub add_complete_pending(@)
 
     my $time = to_tv64($common_secs, $common_nsecs);
 
-    if (!defined($stats{$dev}{"pending"}{$sector})) {
+    if (!defined($stats{$dev}{"pending_$dir"}{$sector})) {
 	my $devname = kdevname($dev);
 	pr_warn("$event_name: Missing queue event: ($devname): ",
 		make_io_str($time, $dir, $sector, $nr_sector));
@@ -874,12 +929,12 @@ sub add_complete_pending(@)
 
     # Find completed pending I/O (pending I/O may be merged)
     my ($q_time, $d_time);
-    while ($stats{$dev}{"pending"}{$sector} and $nr_sector) {
-	my $nr = $stats{$dev}{"pending"}{$sector}{"nr"};
+    while ($stats{$dev}{"pending_$dir"}{$sector} and $nr_sector) {
+	my $nr = $stats{$dev}{"pending_$dir"}{$sector}{"nr"};
 	if ($nr <= $nr_sector) {
-	    $q_time = min($q_time, $stats{$dev}{"pending"}{$sector}{"Q"});
-	    $d_time = min($d_time, $stats{$dev}{"pending"}{$sector}{"D"});
-	    delete($stats{$dev}{"pending"}{$sector});
+	    $q_time = min($q_time, $stats{$dev}{"pending_$dir"}{$sector}{"Q"});
+	    $d_time = min($d_time, $stats{$dev}{"pending_$dir"}{$sector}{"D"});
+	    delete($stats{$dev}{"pending_$dir"}{$sector});
 
 	    # Update queue depth
 	    update_qdepth($dev, $time, -1);
@@ -890,7 +945,7 @@ sub add_complete_pending(@)
 	    # partial complete
 	    $nr -= $nr_sector;
 	    $nr_sector = 0;
-	    update_pending($dev, $sector, $sector + $nr_sector, $nr);
+	    update_pending($dev, $dir, $sector, $sector + $nr_sector, $nr);
 	}
     }
     if (!defined($q_time) or !defined($d_time)) {
@@ -1194,15 +1249,21 @@ EOF
     # Sanity check for pending I/O
     foreach my $dev (keys %stats) {
 	my $devname = kdevname($dev);
-	foreach my $s (keys($stats{$dev}{"pending"})) {
-	    my $nr = $stats{$dev}{"pending"}{$s}{"nr"};
-	    my $q_time = $stats{$dev}{"pending"}{$s}{"Q"} || 0;
-	    my $d_time = $stats{$dev}{"pending"}{$s}{"D"} || 0;
-	    my $d_str = tv64_str($d_time);
 
-	    pr_warn("Missing Pending I/O: ($devname): ",
-		    make_io_str($q_time, "", $s, $nr),
-		    ", $d_str");
+	foreach my $dir ("r", "w") {
+	    if ($stats{$dev}{"pending_$dir"}) {
+		foreach my $s (keys($stats{$dev}{"pending_$dir"})) {
+		    my $nr = $stats{$dev}{"pending_$dir"}{$s}{"nr"};
+		    my $q_time = $stats{$dev}{"pending_$dir"}{$s}{"Q"} || 0;
+		    my $d_time = $stats{$dev}{"pending_$dir"}{$s}{"D"} || 0;
+		    my $q_str = tv64_str($q_time);
+		    my $d_str = tv64_str($d_time);
+
+		    pr_warn("Missing Pending I/O: ($devname): ",
+			    make_io_str($q_time, $dir, $s, $nr),
+			    ", $d_str");
+		}
+	    }
 	}
     }
 
@@ -1944,6 +2005,7 @@ sub trace_begin
 {
     # Setup parameters from environment
     @opt_target_pid = split(/,/, $ENV{FSPERF_TARGET_PID});
+    $opt_no_error = $ENV{FSPERF_NO_ERROR};
     $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
     $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
 }
@@ -2183,6 +2245,7 @@ Usage: $0 report <options>
 Options:
  -p, --pid=PID                Output Schedule time for PIDs.
                               Accepts multiple times (e.g. -p 1 -p 2 -p 3)
+ -n, --no-error               Don't exit even if sanity check found error.
  -s, --seek-threshold=VAL     Seek threshold. If seek distance is smaller than
                               VAL, this seek is ignored.
  -r, --relative-seek          Calculate seek relative distance. I.e. if next
@@ -2201,6 +2264,7 @@ sub cmd_report
 
     my $ret = GetOptions(
 			 "pid=i"		=> \@opt_pid,
+			 "no-error"		=> \$opt_no_error,
 			 "seek-threshold=i"	=> \$opt_seek_threshold,
 			 "relative-seek"	=> \$opt_seek_relative,
 			 "help"			=> \$help,
@@ -2212,6 +2276,7 @@ sub cmd_report
     $ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
     $ENV{FSPERF_SCRIPT} = $0;
     $ENV{FSPERF_TARGET_PID} = join(',',@opt_pid);
+    $ENV{FSPERF_NO_ERROR} = $opt_no_error;
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;
 

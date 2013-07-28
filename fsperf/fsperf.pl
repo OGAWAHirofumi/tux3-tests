@@ -24,7 +24,7 @@ use bignum;
 use Getopt::Long;
 use Cwd;
 
-my (%stats, %switch_state);
+my (%block_s, %sched_s, %switch_state);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_block_data = "perf-block.data";
@@ -690,12 +690,12 @@ sub add_bno(@)
     my $fname = sprintf("bno_%s_%s", lc($EVENT_LONGNAME{$event_name}), $dir);
 
     # Create file if need
-    if (!defined($stats{$dev}{$fname})) {
-	$stats{$dev}{$fname} = create_dev_datfile($dev, $fname);
+    if (!defined($block_s{$dev}{$fname})) {
+	$block_s{$dev}{$fname} = create_dev_datfile($dev, $fname);
     }
 
     # Output I/O position per read or write
-    my $fh = $stats{$dev}{$fname};
+    my $fh = $block_s{$dev}{$fname};
     print $fh time_str($common_secs, $common_nsecs), " $sector ",
 	$sector + $nr_sector, "\n";
 }
@@ -708,15 +708,15 @@ sub add_io(@)
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
-    $stats{$dev}{"complete_blocks"}[$cur_time] += $nr_sector;
-    $stats{$dev}{"complete_io"}[$cur_time]++;
+    $block_s{$dev}{"complete_blocks"}[$cur_time] += $nr_sector;
+    $block_s{$dev}{"complete_io"}[$cur_time]++;
 
-    $stats{$dev}{"req_blocks"} += $nr_sector;
-    $stats{$dev}{"req_nr"}++;
+    $block_s{$dev}{"req_blocks"} += $nr_sector;
+    $block_s{$dev}{"req_nr"}++;
     # Remember maximum sectors on single request
-    $stats{$dev}{"req_max"} = max($stats{$dev}{"req_max"}, $nr_sector);
+    $block_s{$dev}{"req_max"} = max($block_s{$dev}{"req_max"}, $nr_sector);
     # Remember minimum sectors on single request
-    $stats{$dev}{"req_min"} = min($stats{$dev}{"req_min"}, $nr_sector);
+    $block_s{$dev}{"req_min"} = min($block_s{$dev}{"req_min"}, $nr_sector);
 }
 
 # Update queue depth
@@ -727,19 +727,19 @@ sub update_qdepth($$$)
     my $num = shift;
 
     # Modify queue depth
-    $stats{$dev}{"qdepth"} += $num;
-    $stats{$dev}{"qdepth_max"} =
-	max($stats{$dev}{"qdepth_max"}, $stats{$dev}{"qdepth"});
+    $block_s{$dev}{"qdepth"} += $num;
+    $block_s{$dev}{"qdepth_max"} =
+	max($block_s{$dev}{"qdepth_max"}, $block_s{$dev}{"qdepth"});
 
     my $fname = "qdepth_c";
     # Create file if need
-    if (!defined($stats{$dev}{$fname})) {
-	$stats{$dev}{$fname} = create_dev_datfile($dev, $fname);
+    if (!defined($block_s{$dev}{$fname})) {
+	$block_s{$dev}{$fname} = create_dev_datfile($dev, $fname);
     }
 
-    my $fh = $stats{$dev}{$fname};
+    my $fh = $block_s{$dev}{$fname};
     my $time_str = tv64_str($time);
-    print $fh  "$time_str " . $stats{$dev}{"qdepth"} . "\n";
+    print $fh  "$time_str " . $block_s{$dev}{"qdepth"} . "\n";
 }
 
 # Sanity check of pending I/O in queue
@@ -753,14 +753,14 @@ sub sanity_check_pending(@)
     my %same;
 
     foreach my $d ("r", "w") {
-	if ($stats{$dev}{"pending_$d"}) {
-	    foreach my $s (keys($stats{$dev}{"pending_$d"})) {
+	if ($block_s{$dev}{"pending_$d"}) {
+	    foreach my $s (keys($block_s{$dev}{"pending_$d"})) {
 		# Check if there is no same block address
 		if ($sector <= $s and $s < $sector + $nr_sector) {
 		    # There is same block address
 		    $same{$s}{"dir"} = $d;
-		    $same{$s}{"nr"} = $stats{$dev}{"pending_$d"}{$s}{"nr"};
-		    $same{$s}{"Q"} = $stats{$dev}{"pending_$d"}{$s}{"Q"};
+		    $same{$s}{"nr"} = $block_s{$dev}{"pending_$d"}{$s}{"nr"};
+		    $same{$s}{"Q"} = $block_s{$dev}{"pending_$d"}{$s}{"Q"};
 		}
 	    }
 	}
@@ -805,8 +805,8 @@ sub add_queue_pending(@)
     sanity_check_pending(@_);
 
     # Save pending I/O
-    $stats{$dev}{"pending_$dir"}{$sector}{"Q"} = $time;
-    $stats{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"Q"} = $time;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
 
     # Update queue depth
     update_qdepth($dev, $time, 1);
@@ -821,14 +821,14 @@ sub update_pending($$$$$)
     my $sector = shift;
     my $nr_sector = shift;
 
-    my $q_time = $stats{$dev}{"pending_$dir"}{$old_sector}{"Q"};
-    my $d_time = $stats{$dev}{"pending_$dir"}{$old_sector}{"D"};
-    delete($stats{$dev}{"pending_$dir"}{$old_sector});
+    my $q_time = $block_s{$dev}{"pending_$dir"}{$old_sector}{"Q"};
+    my $d_time = $block_s{$dev}{"pending_$dir"}{$old_sector}{"D"};
+    delete($block_s{$dev}{"pending_$dir"}{$old_sector});
 
     # Update pending I/O
-    $stats{$dev}{"pending_$dir"}{$sector}{"Q"} = $q_time;
-    $stats{$dev}{"pending_$dir"}{$sector}{"D"} = $d_time;
-    $stats{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"Q"} = $q_time;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"D"} = $d_time;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
 }
 
 # Collect info of FrontMerge pending I/O
@@ -842,12 +842,12 @@ sub add_frontmerge_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
     my $sector_end = $sector + $nr_sector;
 
-    foreach my $s (keys($stats{$dev}{"pending_$dir"})) {
+    foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
 	if ($sector_end == $s) {
-	    my $nr = $stats{$dev}{"pending_$dir"}{$s}{"nr"};
+	    my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"};
 
 	    # Remove old pending I/O
-	    delete($stats{$dev}{"pending_$dir"}{$sector});
+	    delete($block_s{$dev}{"pending_$dir"}{$sector});
 
 	    # Front merge
 	    $nr_sector += $nr;
@@ -874,12 +874,12 @@ sub add_backmerge_pending(@)
 
     my $time = to_tv64($common_secs, $common_nsecs);
 
-    foreach my $s (keys($stats{$dev}{"pending_$dir"})) {
-	my $nr = $stats{$dev}{"pending_$dir"}{$s}{"nr"};
+    foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
+	my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"};
 
 	if ($s + $nr == $sector) {
 	    # Remove old pending I/O
-	    delete($stats{$dev}{"pending_$dir"}{$sector});
+	    delete($block_s{$dev}{"pending_$dir"}{$sector});
 
 	    # Back merge
 	    $nr += $nr_sector;
@@ -907,7 +907,7 @@ sub add_issue_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
 
     # Save pending I/O
-    $stats{$dev}{"pending_$dir"}{$sector}{"D"} = $time;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"D"} = $time;
 }
 
 # Complete(C) pending I/O
@@ -919,8 +919,9 @@ sub add_complete_pending(@)
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
     my $time = to_tv64($common_secs, $common_nsecs);
+    my $pend_str = "pending_$dir";
 
-    if (!defined($stats{$dev}{"pending_$dir"}{$sector})) {
+    if (!defined($block_s{$dev}{$pend_str}{$sector})) {
 	my $devname = kdevname($dev);
 	pr_warn("$event_name: Missing queue event: ($devname): ",
 		make_io_str($time, $dir, $sector, $nr_sector));
@@ -929,12 +930,12 @@ sub add_complete_pending(@)
 
     # Find completed pending I/O (pending I/O may be merged)
     my ($q_time, $d_time);
-    while ($stats{$dev}{"pending_$dir"}{$sector} and $nr_sector) {
-	my $nr = $stats{$dev}{"pending_$dir"}{$sector}{"nr"};
+    while ($block_s{$dev}{$pend_str}{$sector} and $nr_sector) {
+	my $nr = $block_s{$dev}{$pend_str}{$sector}{"nr"};
 	if ($nr <= $nr_sector) {
-	    $q_time = min($q_time, $stats{$dev}{"pending_$dir"}{$sector}{"Q"});
-	    $d_time = min($d_time, $stats{$dev}{"pending_$dir"}{$sector}{"D"});
-	    delete($stats{$dev}{"pending_$dir"}{$sector});
+	    $q_time = min($q_time, $block_s{$dev}{$pend_str}{$sector}{"Q"});
+	    $d_time = min($d_time, $block_s{$dev}{$pend_str}{$sector}{"D"});
+	    delete($block_s{$dev}{$pend_str}{$sector});
 
 	    # Update queue depth
 	    update_qdepth($dev, $time, -1);
@@ -956,21 +957,21 @@ sub add_complete_pending(@)
     my $lat_q2c = $time - $q_time;
     my $lat_d2c = $time - $d_time;
 
-    # Remember stats of I/O latency
+    # Remember block_s of I/O latency
     foreach my $d ($dir, "c") {
-	$stats{$dev}{"lat_q2c_total_$d"} += $lat_q2c;
-	$stats{$dev}{"lat_q2c_max_$d"} =
-	    max($stats{$dev}{"lat_q2c_max_$d"}, $lat_q2c);
-	$stats{$dev}{"lat_q2c_min_$d"} =
-	    min($stats{$dev}{"lat_q2c_min_$d"}, $lat_q2c);
-	$stats{$dev}{"lat_q2c_nr_$d"}++;
+	$block_s{$dev}{"lat_q2c_total_$d"} += $lat_q2c;
+	$block_s{$dev}{"lat_q2c_max_$d"} =
+	    max($block_s{$dev}{"lat_q2c_max_$d"}, $lat_q2c);
+	$block_s{$dev}{"lat_q2c_min_$d"} =
+	    min($block_s{$dev}{"lat_q2c_min_$d"}, $lat_q2c);
+	$block_s{$dev}{"lat_q2c_nr_$d"}++;
 
-	$stats{$dev}{"lat_d2c_total_$d"} += $lat_d2c;
-	$stats{$dev}{"lat_d2c_nr_$d"}++;
-	$stats{$dev}{"lat_d2c_max_$d"} =
-	    max($stats{$dev}{"lat_d2c_max_$d"}, $lat_d2c);
-	$stats{$dev}{"lat_d2c_min_$d"} =
-	    min($stats{$dev}{"lat_d2c_min_$d"}, $lat_d2c);
+	$block_s{$dev}{"lat_d2c_total_$d"} += $lat_d2c;
+	$block_s{$dev}{"lat_d2c_nr_$d"}++;
+	$block_s{$dev}{"lat_d2c_max_$d"} =
+	    max($block_s{$dev}{"lat_d2c_max_$d"}, $lat_d2c);
+	$block_s{$dev}{"lat_d2c_min_$d"} =
+	    min($block_s{$dev}{"lat_d2c_min_$d"}, $lat_d2c);
     }
 
     for my $d ($dir, "c") {
@@ -978,20 +979,20 @@ sub add_complete_pending(@)
 	my $fname_d2c = sprintf("lat_d2c_%s", $d);
 
 	# Create file if need
-	if (!defined($stats{$dev}{$fname_q2c})) {
-	    $stats{$dev}{$fname_q2c} = create_dev_datfile($dev, $fname_q2c);
+	if (!defined($block_s{$dev}{$fname_q2c})) {
+	    $block_s{$dev}{$fname_q2c} = create_dev_datfile($dev, $fname_q2c);
 	}
-	if (!defined($stats{$dev}{$fname_d2c})) {
-	    $stats{$dev}{$fname_d2c} = create_dev_datfile($dev, $fname_d2c);
+	if (!defined($block_s{$dev}{$fname_d2c})) {
+	    $block_s{$dev}{$fname_d2c} = create_dev_datfile($dev, $fname_d2c);
 	}
 
 	my $time_str = tv64_str($time);
 	# Output Q2C latency time
-	my $fh_q2c = $stats{$dev}{$fname_q2c};
+	my $fh_q2c = $block_s{$dev}{$fname_q2c};
 	my $lat_q2c_str = tv64_str($lat_q2c);
 	print $fh_q2c "$time_str $lat_q2c_str\n";
 	# Output D2C latency time
-	my $fh_d2c = $stats{$dev}{$fname_d2c};
+	my $fh_d2c = $block_s{$dev}{$fname_d2c};
 	my $lat_d2c_str = tv64_str($lat_d2c);
 	print $fh_d2c "$time_str $lat_d2c_str\n";
     }
@@ -1017,21 +1018,21 @@ sub add_seek_distance($$$$$)
     my $distance = 0;
 
     # Ignore first seek
-    if (defined($stats{$dev}{"last_end_$dir"})) {
+    if (defined($block_s{$dev}{"last_end_$dir"})) {
 	$distance = seek_distance($start, $end,
-				  $stats{$dev}{"last_start_$dir"},
-				  $stats{$dev}{"last_end_$dir"});
+				  $block_s{$dev}{"last_start_$dir"},
+				  $block_s{$dev}{"last_end_$dir"});
 	if ($distance > $opt_seek_threshold) {
-	    $stats{$dev}{"seek_nr_$dir"}[$cur_time]++;
-	    $stats{$dev}{"seek_distance_$dir"}[$cur_time] += $distance;
+	    $block_s{$dev}{"seek_nr_$dir"}[$cur_time]++;
+	    $block_s{$dev}{"seek_distance_$dir"}[$cur_time] += $distance;
 	} else {
 	    $distance = 0;
 	}
     }
     # Update last location
-    $stats{$dev}{"last_time_$dir"} = $time;
-    $stats{$dev}{"last_start_$dir"} = $start;
-    $stats{$dev}{"last_end_$dir"} = $end;
+    $block_s{$dev}{"last_time_$dir"} = $time;
+    $block_s{$dev}{"last_start_$dir"} = $start;
+    $block_s{$dev}{"last_end_$dir"} = $end;
 
     return $distance;
 }
@@ -1049,18 +1050,18 @@ sub add_seek(@)
 
     foreach my $d ($dir, "c") {
 	my $fname = sprintf("seek_step_%s", $d);
-	my $last_time = $stats{$dev}{"last_time_$d"} || 0;
-	my $last_end = $stats{$dev}{"last_end_$d"} || 0;
+	my $last_time = $block_s{$dev}{"last_time_$d"} || 0;
+	my $last_end = $block_s{$dev}{"last_end_$d"} || 0;
 
 	# Add seek distance
 	$distance = add_seek_distance($d, $dev, $time,
 				      $sector, $sector + $nr_sector);
 	# Create file if need
-	if (!defined($stats{$dev}{$fname})) {
-	    $stats{$dev}{$fname} = create_dev_datfile($dev, $fname);
+	if (!defined($block_s{$dev}{$fname})) {
+	    $block_s{$dev}{$fname} = create_dev_datfile($dev, $fname);
 	}
 	# Output seek step
-	my $fh = $stats{$dev}{$fname};
+	my $fh = $block_s{$dev}{$fname};
 	my $end = $sector + $nr_sector;
 #	print $fh "#$time $sector $end\n";
 	if ($distance) {
@@ -1082,9 +1083,9 @@ sub block_main
     calc_start_end_time();
 
     # Output MB/s and IO/s
-    foreach my $dev (keys %stats) {
-	my $complete_blocks = $stats{$dev}{"complete_blocks"};
-	my $complete_io = $stats{$dev}{"complete_io"};
+    foreach my $dev (keys %block_s) {
+	my $complete_blocks = $block_s{$dev}{"complete_blocks"};
+	my $complete_io = $block_s{$dev}{"complete_io"};
 	my $total_blk = 0;
 	my $total_io = 0;
 
@@ -1118,7 +1119,7 @@ sub block_main
 EOF
     my $elapse = $perf_end - $perf_start;
 
-    foreach my $dev (keys %stats) {
+    foreach my $dev (keys %block_s) {
 	printf $log " %4s    %15s    %15s    %15s\n",
 	    kdevname($dev), tv64_str($perf_start), tv64_str($perf_end),
 	    tv64_str($elapse);
@@ -1148,12 +1149,12 @@ EOF
 -----------------------------------------------------------------
   Dev       Avg       Min       Max    (1 == 512 bytes)
 EOF
-    foreach my $dev (keys %stats) {
+    foreach my $dev (keys %block_s) {
 	# Output short summary
-	my $avg = $stats{$dev}{"req_blocks"} / $stats{$dev}{"req_nr"};
+	my $avg = $block_s{$dev}{"req_blocks"} / $block_s{$dev}{"req_nr"};
 	printf $log " %4s  %8.2f  %8u  %8u\n",
-	    kdevname($dev), $avg, $stats{$dev}{"req_min"},
-	    $stats{$dev}{"req_max"};
+	    kdevname($dev), $avg, $block_s{$dev}{"req_min"},
+	    $block_s{$dev}{"req_max"};
     }
 
     # Summary Queue depth
@@ -1163,9 +1164,9 @@ EOF
 -----------------------------------------------------------------
   Dev      Max
 EOF
-    foreach my $dev (keys %stats) {
+    foreach my $dev (keys %block_s) {
 	# Output short summary
-	my $max = $stats{$dev}{"qdepth_max"} || 0;
+	my $max = $block_s{$dev}{"qdepth_max"} || 0;
 
 	printf $log " %4s     %4u\n",
 	    kdevname($dev), $max;
@@ -1181,14 +1182,14 @@ EOF
 -----------------------------------------------------------------
   Dev   Type  Direction          Avg          Min          Max    (secs)
 EOF
-    foreach my $dev (keys %stats) {
+    foreach my $dev (keys %block_s) {
 	foreach my $dir ("r", "w", "c") {
 	    foreach my $type ("q2c", "d2c") {
 		# Output short summary
-		my $total = $stats{$dev}{"lat_${type}_total_${dir}"} || 0;
-		my $nr = $stats{$dev}{"lat_${type}_nr_${dir}"} || 0;
-		my $max = $stats{$dev}{"lat_${type}_max_${dir}"} || 0;
-		my $min = $stats{$dev}{"lat_${type}_min_${dir}"} || 0;
+		my $total = $block_s{$dev}{"lat_${type}_total_${dir}"} || 0;
+		my $nr = $block_s{$dev}{"lat_${type}_nr_${dir}"} || 0;
+		my $max = $block_s{$dev}{"lat_${type}_max_${dir}"} || 0;
+		my $min = $block_s{$dev}{"lat_${type}_min_${dir}"} || 0;
 		my $avg = $total / $nr;
 
 		printf $log " %4s   %4s   %8s  %s  %s  %s\n",
@@ -1209,7 +1210,7 @@ EOF
 -----------------------------------------------------------------
   Dev   Direction    Seeks/s  Total(Seeks)  Avg Distance(MB) Total Distance(MB)
 EOF
-    foreach my $dev (keys %stats) {
+    foreach my $dev (keys %block_s) {
 	foreach my $dir ("r", "w", "c") {
 	    my $fname_nr = "seek_nr_$dir";
 	    my $fname_distance = "seek_distance_$dir";
@@ -1218,8 +1219,8 @@ EOF
 
 	    my $fh = create_dev_datfile($dev, $fname_nr);
 	    for my $t (to_sec($perf_start)..to_sec($perf_end)) {
-		my $nr = $stats{$dev}{$fname_nr}[$t] || 0;
-		my $distance = $stats{$dev}{$fname_distance}[$t] || 0;
+		my $nr = $block_s{$dev}{$fname_nr}[$t] || 0;
+		my $distance = $block_s{$dev}{$fname_distance}[$t] || 0;
 		$total_nr += $nr;
 		$total_distance += $distance;
 		print $fh "$t.5 ", $nr, "\n";
@@ -1242,20 +1243,20 @@ EOF
     close($log);
 
     # Create summary plot
-#    foreach my $dev (keys %stats) {
+#    foreach my $dev (keys %block_s) {
 #	output_plot_summary($dev, 0);
 #    }
 
     # Sanity check for pending I/O
-    foreach my $dev (keys %stats) {
+    foreach my $dev (keys %block_s) {
 	my $devname = kdevname($dev);
 
 	foreach my $dir ("r", "w") {
-	    if ($stats{$dev}{"pending_$dir"}) {
-		foreach my $s (keys($stats{$dev}{"pending_$dir"})) {
-		    my $nr = $stats{$dev}{"pending_$dir"}{$s}{"nr"};
-		    my $q_time = $stats{$dev}{"pending_$dir"}{$s}{"Q"} || 0;
-		    my $d_time = $stats{$dev}{"pending_$dir"}{$s}{"D"} || 0;
+	    if ($block_s{$dev}{"pending_$dir"}) {
+		foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
+		    my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"};
+		    my $q_time = $block_s{$dev}{"pending_$dir"}{$s}{"Q"} || 0;
+		    my $d_time = $block_s{$dev}{"pending_$dir"}{$s}{"D"} || 0;
 		    my $q_str = tv64_str($q_time);
 		    my $d_str = tv64_str($d_time);
 
@@ -1270,7 +1271,7 @@ EOF
     # Remember $perf_xstart and $perf_xend
     $ENV{FSPERF_XSTART} = $perf_xstart;
     $ENV{FSPERF_XEND} = $perf_xend;
-    $ENV{FSPERF_DEV} = join(",", keys(%stats));
+    $ENV{FSPERF_DEV} = join(",", keys(%block_s));
 
     return 0;
 }
@@ -1616,11 +1617,11 @@ sub sched_stat
     my $time = shift;
     my $elapse = shift;
 
-    if (!defined($stats{$pid}{fh})) {
-	$stats{$pid}{fh} = create_pid_datfile($pid, "time");
+    if (!defined($sched_s{$pid}{fh})) {
+	$sched_s{$pid}{fh} = create_pid_datfile($pid, "time");
     }
 
-    my $fh = $stats{$pid}{fh};
+    my $fh = $sched_s{$pid}{fh};
     my $start = $time - $elapse;
     my $start_str = tv64_str($start);
     my $end = $time;
@@ -1637,17 +1638,17 @@ sub sched_stat
     print $fh "@cols\n";
 
     # Remember stat
-    $stats{$pid}{start} = min($stats{$pid}{start}, $start);
-    $stats{$pid}{end} = max($stats{$pid}{end}, $end);
-    $stats{$pid}{comm} = $comm;
-    $stats{$pid}{$type}{total} += $elapse;
+    $sched_s{$pid}{start} = min($sched_s{$pid}{start}, $start);
+    $sched_s{$pid}{end} = max($sched_s{$pid}{end}, $end);
+    $sched_s{$pid}{comm} = $comm;
+    $sched_s{$pid}{$type}{total} += $elapse;
     # Add elapse to proper position
     my $cur_sec = to_sec($end);
     while ($elapse > 0) {
 	my $cur_start = to_tv64($cur_sec, 0);
 	my $cur_elapse = min($end - $cur_start, $elapse);
 
-	$stats{$pid}{$type}{sec}[$cur_sec] += $cur_elapse;
+	$sched_s{$pid}{$type}{sec}[$cur_sec] += $cur_elapse;
 	$elapse -= $cur_elapse;
 
 	$end = $cur_start;
@@ -1891,15 +1892,15 @@ sub sched_main
     print $log <<"EOF";
                       Schedule Time
 EOF
-    foreach my $pid (sort { $a <=> $b } (keys(%stats))) {
-	my $comm = $stats{$pid}{comm};
-	my $start_time = $stats{$pid}{start};
-	my $end_time = $stats{$pid}{end};
+    foreach my $pid (sort { $a <=> $b } (keys(%sched_s))) {
+	my $comm = $sched_s{$pid}{comm};
+	my $start_time = $sched_s{$pid}{start};
+	my $end_time = $sched_s{$pid}{end};
 	my $elapse = $end_time - $start_time;
-	my $run_time = $stats{$pid}{R}{total};
-	my $wait_time = $stats{$pid}{W}{total};
-	my $sleep_time = $stats{$pid}{S}{total};
-	my $block_time = $stats{$pid}{D}{total};
+	my $run_time = $sched_s{$pid}{R}{total};
+	my $wait_time = $sched_s{$pid}{W}{total};
+	my $sleep_time = $sched_s{$pid}{S}{total};
+	my $block_time = $sched_s{$pid}{D}{total};
 
 	print $log <<"EOF";
 ----------------------------------------------------------
@@ -1928,7 +1929,7 @@ EOF
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
 	    foreach my $type ("R", "W", "S", "D") {
-		my $time_str = tv64_str($stats{$pid}{$type}{sec}[$idx] || 0);
+		my $time_str = tv64_str($sched_s{$pid}{$type}{sec}[$idx] || 0);
 		print $fh " $time_str";
 	    }
 	    print $fh "\n";
@@ -2275,7 +2276,7 @@ sub cmd_report
     # Pass parameters as environment variables
     $ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
     $ENV{FSPERF_SCRIPT} = $0;
-    $ENV{FSPERF_TARGET_PID} = join(',',@opt_pid);
+    $ENV{FSPERF_TARGET_PID} = join(',', @opt_pid);
     $ENV{FSPERF_NO_ERROR} = $opt_no_error;
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;

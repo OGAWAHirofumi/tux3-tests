@@ -24,7 +24,7 @@ use bignum;
 use Getopt::Long;
 use Cwd;
 
-my (%block_s, %sched_s, %switch_state);
+my (%block_s, %sched_s, %switch_state, %wq_state);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_block_data = "perf-block.data";
@@ -38,6 +38,7 @@ my $opt_seek_threshold = 0;
 my $opt_seek_relative = 0;
 
 my @opt_target_pid = ();
+my @opt_target_wid = ();
 my ($cur_time, $perf_start, $perf_end, $perf_xstart, $perf_xend);
 
 ##################################
@@ -201,6 +202,115 @@ sub create_datfile($)
 
 ##################################
 #
+# Hack to resolve symbol
+#
+# FIXME: maybe, we should add new functionality to perf to resolve
+# symbol from script
+#
+
+my @kallsyms;
+my $kallsyms_loaded = 0;
+
+# Load kallsyms in perf.data
+sub kallsyms_load($)
+{
+    my $data = shift;
+
+    if ($kallsyms_loaded == 0) {
+	my $re_addr = "[0-9a-fA-F]";
+	my $re_addr8 = $re_addr . "{8}";
+	my $re_addr16 = $re_addr . "{16}";
+
+	# No way to dump kallsyms by perf, so use "strings"
+	open(my $fh, "strings $data |") or die "Couldn't run `strings': $!";
+
+	my $last = -1;
+	my $need_sort = 0;
+	while (<$fh>) {
+	    if (m!^($re_addr8|$re_addr16) (\S) (\S+)(\s+\[(.*)\])?$!) {
+		my $addr = hex($1);
+		my $sym_type = $2;
+		my $sym = $3;
+		my $mod = $5 || "";
+
+		my %m = (
+			 addr => $addr,
+			 type => $sym_type,
+			 sym => $sym,
+			 mod => $mod,
+			);
+
+		push(@kallsyms, \%m);
+
+		if ($last > $addr) {
+		    $need_sort = 1;
+		}
+		$last = $addr;
+	    }
+	}
+
+	close($fh);
+
+	$need_sort = 1;
+	if ($need_sort) {
+	    @kallsyms = sort { $a->{addr} <=> $b->{addr} } @kallsyms;
+	}
+#	foreach my $m (@kallsyms) {
+#	    printf "%#x, %s, %s, %s\n",
+#		$m->{addr}, $m->{type}, $m->{sym}, $m->{mod};
+#	}
+    }
+
+    $kallsyms_loaded = 1;
+}
+
+# Find symbol by addr
+sub kallsyms_find_by_addr($)
+{
+    my $addr = shift;
+
+    kallsyms_load($perf_sched_data);
+
+    if (!scalar(@kallsyms)) {
+	# If not found, return address
+	return sprintf("%#x", $addr);
+    }
+
+    # bsearch symbol address
+    my $min_idx = 0;
+    my $max_idx = $#kallsyms;
+
+    my ($idx, $sym, $diff);
+    while ($min_idx <= $max_idx) {
+	$idx = int(($min_idx + $max_idx) / 2);
+
+	if ($kallsyms[$idx]->{addr} < $addr) {
+	    $min_idx = $idx;
+	} elsif ($kallsyms[$idx]->{addr} > $addr) {
+	    $max_idx = $idx - 1;
+	} else {
+	    last;
+	}
+
+	# linear search nearby symbol less than $addr
+	if ($max_idx - $min_idx <= 5) {
+	    $idx = $max_idx;
+	    while ($kallsyms[$idx]->{addr} > $addr) {
+		$idx--;
+	    }
+	    $diff = $addr - $kallsyms[$idx]->{addr};
+	    last;
+	}
+    }
+
+    if ($diff) {
+	return sprintf("%s+%#x", $kallsyms[$idx]->{sym}, $diff);
+    }
+    return $kallsyms[$idx]->{sym};
+}
+
+##################################
+#
 # plot
 #
 
@@ -321,8 +431,11 @@ sub output_plot_summary($$)
 		   fname_plot_seek_step($dev, "c")
 		  );
     # Add schedule plot if need
-    if ($need_sched and scalar(@opt_target_pid)) {
-	my @sched_gp = map { fname_plot_sched($_); } @opt_target_pid;
+    if ($need_sched and (scalar(@opt_target_pid) || scalar(@opt_target_wid))) {
+	my @sched_gp = map {
+	    fname_plot_sched($_);
+	} (@opt_target_pid, @opt_target_wid);
+
 	push(@plot_gp, @sched_gp);
     }
 
@@ -1514,17 +1627,17 @@ use constant TASK_PARKED		=> 512;
 
 sub fname_plot_sched($)
 {
-    my $pid = shift;
-    return "sched_$pid.gp";
+    my $id = shift;
+    return "sched_$id.gp";
 }
 
 sub output_plot_sched($$)
 {
-    my $pid = shift;
+    my $id = shift;
     my $comm = shift;
-    my $fname = fname_plot_sched($pid);
-    my $datafile_time = "sched_${pid}_time.dat";
-    my $datafile_stat = "sched_${pid}_stat.dat";
+    my $fname = fname_plot_sched($id);
+    my $datafile_time = "sched_${id}_time.dat";
+    my $datafile_stat = "sched_${id}_stat.dat";
 
     my $fh = create_file($fname, 0755);
 
@@ -1532,7 +1645,9 @@ sub output_plot_sched($$)
     my $ylen = 0.025;
     my $ymin = $ylow - 0.1;
     my $ymax = 1.1;
-    output_plot_pre($fh, "Task $pid ($comm) Schedule",
+    my $type = is_wid($id) ? "Workqueue" : "Task";
+
+    output_plot_pre($fh, "$type $id ($comm) Schedule",
 		    "Time (secs)", "Schedule Time (secs)",
 		    "set yrange [$ymin:$ymax]",
 		    "set ytics 0,0.1,1",
@@ -1590,12 +1705,12 @@ sub output_plot_sched($$)
     close($fh);
 }
 
-sub create_pid_datfile($$)
+sub create_id_datfile($$)
 {
-    my $pid = shift;
+    my $id = shift;
     my $postfix = shift;
 
-    my $base = sprintf("sched_%u_%s", $pid, $postfix);
+    my $base = sprintf("sched_%s_%s", $id, $postfix);
     return create_datfile($base);
 }
 
@@ -1609,19 +1724,19 @@ sub is_interesting_pid($)
     return 0;
 }
 
-sub sched_stat
+sub sched_stat_process
 {
     my $type = shift;
-    my $pid = shift;
+    my $id = shift;
     my $comm = shift;
     my $time = shift;
     my $elapse = shift;
 
-    if (!defined($sched_s{$pid}{fh})) {
-	$sched_s{$pid}{fh} = create_pid_datfile($pid, "time");
+    if (!defined($sched_s{$id}{fh})) {
+	$sched_s{$id}{fh} = create_id_datfile($id, "time");
     }
 
-    my $fh = $sched_s{$pid}{fh};
+    my $fh = $sched_s{$id}{fh};
     my $start = $time - $elapse;
     my $start_str = tv64_str($start);
     my $end = $time;
@@ -1638,21 +1753,57 @@ sub sched_stat
     print $fh "@cols\n";
 
     # Remember stat
-    $sched_s{$pid}{start} = min($sched_s{$pid}{start}, $start);
-    $sched_s{$pid}{end} = max($sched_s{$pid}{end}, $end);
-    $sched_s{$pid}{comm} = $comm;
-    $sched_s{$pid}{$type}{total} += $elapse;
+    $sched_s{$id}{start} = min($sched_s{$id}{start}, $start);
+    $sched_s{$id}{end} = max($sched_s{$id}{end}, $end);
+    $sched_s{$id}{comm} = $comm;
+    $sched_s{$id}{$type}{total} += $elapse;
     # Add elapse to proper position
     my $cur_sec = to_sec($end);
     while ($elapse > 0) {
 	my $cur_start = to_tv64($cur_sec, 0);
 	my $cur_elapse = min($end - $cur_start, $elapse);
 
-	$sched_s{$pid}{$type}{sec}[$cur_sec] += $cur_elapse;
+	$sched_s{$id}{$type}{sec}[$cur_sec] += $cur_elapse;
 	$elapse -= $cur_elapse;
 
 	$end = $cur_start;
 	$cur_sec--;
+    }
+}
+
+sub sched_stat
+{
+    my $type = shift;
+    my $pid = shift;
+    my $comm = shift;
+    my $time = shift;
+    my $elapse = shift;
+
+    # Add stat as process
+    if (is_interesting_pid($pid)) {
+	sched_stat_process($type, $pid, $comm, $time, $elapse);
+    }
+
+    # Check workqueue work
+    if ($wq_state{$pid}) {
+	foreach my $wid (keys($wq_state{$pid})) {
+	    if (is_interesting_wid($wid)) {
+		my $time_start = $time - $elapse;
+		my $work_start = $wq_state{$pid}{$wid}{start};
+		# If {end} is undef, work is still running
+		my $work_end = $wq_state{$pid}{$wid}{end} || $time;
+		my $sym = $wq_state{$pid}{$wid}{sym};
+
+		# Stat is in workqueue work?
+		if ($work_start < $time and $time_start < $work_end) {
+		    my $start = max($time_start, $work_start);
+		    my $end = min($time, $work_end);
+
+		    # Add stat as workqueue work
+		    sched_stat_process($type, $wid, $sym, $end, $end - $start);
+		}
+	    }
+	}
     }
 }
 
@@ -1673,7 +1824,7 @@ sub sched::sched_stat_runtime
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($runtime and is_interesting_pid($pid)) {
+    if ($runtime) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("R", $pid, $comm, $time, $runtime);
     }
@@ -1687,7 +1838,7 @@ sub sched::sched_stat_blocked
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($delay and is_interesting_pid($pid)) {
+    if ($delay) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("D", $pid, $comm, $time, $delay);
     }
@@ -1710,7 +1861,7 @@ sub sched::sched_stat_sleep
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($delay and is_interesting_pid($pid)) {
+    if ($delay) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("S", $pid, $comm, $time, $delay);
     }
@@ -1724,7 +1875,7 @@ sub sched::sched_stat_wait
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($delay and is_interesting_pid($pid)) {
+    if ($delay) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("W", $pid, $comm, $time, $delay);
     }
@@ -1814,22 +1965,23 @@ sub sched::sched_switch
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if (is_interesting_pid($prev_pid)) {
-	my $time = to_tv64($common_secs, $common_nsecs);
-	if ($prev_state & TASK_RUNNING) {
-	    remember_switch("R", $prev_pid, $prev_comm, $time);
-	} elsif ($prev_state & TASK_INTERRUPTIBLE) {
-	    remember_switch("S", $prev_pid, $prev_comm, $time);
-	} elsif ($prev_state & TASK_UNINTERRUPTIBLE) {
-	    remember_switch("D", $prev_pid, $prev_comm, $time);
-	} else {
-	    delete($switch_state{$prev_pid});
-	}
+    my $time;
+
+    # Remember state of previous task
+    $time = to_tv64($common_secs, $common_nsecs);
+    if ($prev_state & TASK_RUNNING) {
+	remember_switch("R", $prev_pid, $prev_comm, $time);
+    } elsif ($prev_state & TASK_INTERRUPTIBLE) {
+	remember_switch("S", $prev_pid, $prev_comm, $time);
+    } elsif ($prev_state & TASK_UNINTERRUPTIBLE) {
+	remember_switch("D", $prev_pid, $prev_comm, $time);
+    } else {
+	delete($switch_state{$prev_pid});
     }
-    if (is_interesting_pid($next_pid)) {
-	my $time = to_tv64($common_secs, $common_nsecs);
-	remember_switch("R", $next_pid, $next_comm, $time);
-    }
+
+    # Remember state of next task
+    $time = to_tv64($common_secs, $common_nsecs);
+    remember_switch("R", $next_pid, $next_comm, $time);
 }
 
 #sub sched::sched_wakeup_new
@@ -1892,23 +2044,41 @@ sub sched_main
     print $log <<"EOF";
                       Schedule Time
 EOF
-    foreach my $pid (sort { $a <=> $b } (keys(%sched_s))) {
-	my $comm = $sched_s{$pid}{comm};
-	my $start_time = $sched_s{$pid}{start};
-	my $end_time = $sched_s{$pid}{end};
-	my $elapse = $end_time - $start_time;
-	my $run_time = $sched_s{$pid}{R}{total};
-	my $wait_time = $sched_s{$pid}{W}{total};
-	my $sleep_time = $sched_s{$pid}{S}{total};
-	my $block_time = $sched_s{$pid}{D}{total};
+    foreach my $id (sort { id_for_cmp($a) <=> id_for_cmp($b) } keys %sched_s) {
+	my $comm = $sched_s{$id}{comm};
+	my $start_time = $sched_s{$id}{start};
+	my $end_time = $sched_s{$id}{end};
+	my $run_time = $sched_s{$id}{R}{total};
+	my $wait_time = $sched_s{$id}{W}{total};
+	my $sleep_time = $sched_s{$id}{S}{total};
+	my $block_time = $sched_s{$id}{D}{total};
+	my $elapse;
 
-	print $log <<"EOF";
+	if (!is_wid($id)) {
+	    # Elapse time is whole time of task
+	    $elapse = $end_time - $start_time;
+
+	    print $log <<"EOF";
 ----------------------------------------------------------
    Pid            comm       Start(sec)         End(sec)      Elapse(sec)
 EOF
-	printf $log "%6u %15s %16s %16s %16s\n",
-	    $pid, $comm,
-	    tv64_str($start_time), tv64_str($end_time), tv64_str($elapse);
+	    printf $log "%6u %15s %16s %16s %16s\n",
+		$id, $comm,
+		tv64_str($start_time), tv64_str($end_time), tv64_str($elapse);
+	} else {
+	    # Elapse time is only spent on work
+	    $elapse = $sched_s{$id}{elapse};
+
+	    print $log <<"EOF";
+----------------------------------------------------------
+                        Workqueue work
+----------------------------------------------------------
+ Work-id                 func       Start(sec)         End(sec)      Elapse(sec)
+EOF
+	    printf $log "%8s %20s %16s %16s %16s\n",
+		$id, $comm,
+		tv64_str($start_time), tv64_str($end_time), tv64_str($elapse);
+	}
 
 	print $log <<"EOF";
 
@@ -1925,11 +2095,11 @@ EOF
 	    tv64_str($sleep_time), ($sleep_time * 100) / $elapse,
 	    tv64_str($block_time), ($block_time * 100) / $elapse;
 
-	my $fh = create_pid_datfile($pid, "stat");
+	my $fh = create_id_datfile($id, "stat");
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
 	    foreach my $type ("R", "W", "S", "D") {
-		my $time_str = tv64_str($sched_s{$pid}{$type}{sec}[$idx] || 0);
+		my $time_str = tv64_str($sched_s{$id}{$type}{sec}[$idx] || 0);
 		print $fh " $time_str";
 	    }
 	    print $fh "\n";
@@ -1937,7 +2107,7 @@ EOF
 	close($fh);
 
 	# Create sched plot
-	output_plot_sched($pid, $comm);
+	output_plot_sched($id, $comm);
     }
 
     close($log);
@@ -1947,6 +2117,122 @@ EOF
 	output_plot_summary($dev, 1);
     }
 }
+
+
+##################################
+#
+# workqueue events to help sched stats
+#
+
+my %wq_work_id;
+my $last_work_id = 1;
+
+sub is_wid($)
+{
+    my $wid = shift;
+
+    if ($wid =~ m!^work-(\d+)!) {
+	return $1;
+    }
+    return 0;
+}
+
+sub id_for_cmp($)
+{
+    my $id = shift;
+
+    my $wid_val = is_wid($id);
+    if ($wid_val) {
+	# $id is work_id, use value bigger than any pid
+	return 10000000000 + $wid_val;
+    }
+
+    # $id is pid
+    return $id;
+}
+
+sub to_wid($)
+{
+    my $val = shift;
+    return "work-$val";
+}
+
+sub work_to_wid($)
+{
+    my $work = shift;
+
+    if (!exists($wq_work_id{$work})) {
+	$wq_work_id{$work} = $last_work_id++;
+    }
+
+    return to_wid($wq_work_id{$work});
+}
+
+sub is_interesting_wid($)
+{
+    my $wid = shift;
+
+    if (!scalar(@opt_target_wid) or grep { $_ eq $wid } @opt_target_wid) {
+	return 1;
+    }
+    return 0;
+}
+
+sub workqueue::workqueue_execute_start
+{
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm,
+	$work, $function) = @_;
+
+    my $wid = work_to_wid($work);
+    if (!is_interesting_wid($wid)) {
+	return;
+    }
+
+    $wq_state{$common_pid}{$wid}{start} = to_tv64($common_secs, $common_nsecs);
+    $wq_state{$common_pid}{$wid}{end} = undef;
+    $wq_state{$common_pid}{$wid}{sym} = kallsyms_find_by_addr($function);
+}
+
+sub workqueue::workqueue_execute_end
+{
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm,
+	$work) = @_;
+
+    my $wid = work_to_wid($work);
+    if (!is_interesting_wid($wid)) {
+	return;
+    }
+
+    $wq_state{$common_pid}{$wid}{end} = to_tv64($common_secs, $common_nsecs);
+
+    if ($wq_state{$common_pid}{$wid}{start}) {
+	my $start = $wq_state{$common_pid}{$wid}{start};
+	my $end = $wq_state{$common_pid}{$wid}{end};
+	my $elapse = $end - $start;
+
+	# Add time only spent on work
+	if (not $sched_s{$wid}{comm}) {
+	    $sched_s{$wid}{comm} = $wq_state{$common_pid}{$wid}{sym};
+	}
+	$sched_s{$wid}{elapse} += $elapse;
+    }
+}
+
+#sub workqueue::workqueue_activate_work
+#{
+#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+#	$common_pid, $common_comm,
+#	$work) = @_;
+#}
+
+#sub workqueue::workqueue_queue_work
+#{
+#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+#	$common_pid, $common_comm,
+#	$work, $function, $workqueue, $req_cpu, $cpu) = @_;
+#}
 
 sub trace_unhandled
 {
@@ -2006,6 +2292,7 @@ sub trace_begin
 {
     # Setup parameters from environment
     @opt_target_pid = split(/,/, $ENV{FSPERF_TARGET_PID});
+    @opt_target_wid = split(/,/, $ENV{FSPERF_TARGET_WID});
     $opt_no_error = $ENV{FSPERF_NO_ERROR};
     $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
     $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
@@ -2168,6 +2455,7 @@ sub run_record
 #			"block:block_rq_abort",
 		       );
     my @sched_events = (
+			# sched events
 #			"sched:sched_pi_setprio",
 			"sched:sched_stat_runtime",
 			"sched:sched_stat_blocked",
@@ -2186,6 +2474,12 @@ sub run_record
 #			"sched:sched_wakeup",
 #			"sched:sched_kthread_stop_ret",
 #			"sched:sched_kthread_stop",
+
+			# workqueue events
+			"workqueue:workqueue_execute_end",
+			"workqueue:workqueue_execute_start",
+#			"workqueue:workqueue_activate_work",
+#			"workqueue:workqueue_queue_work",
 		       );
 
     #
@@ -2246,6 +2540,8 @@ Usage: $0 report <options>
 Options:
  -p, --pid=PID                Output Schedule time for PIDs.
                               Accepts multiple times (e.g. -p 1 -p 2 -p 3)
+ -w, --work-id=ID             Output Schedule time for Work-id of ID.
+                              Accepts multiple times (e.g. -w 1 -w 2 -w 3)
  -n, --no-error               Don't exit even if sanity check found error.
  -s, --seek-threshold=VAL     Seek threshold. If seek distance is smaller than
                               VAL, this seek is ignored.
@@ -2261,10 +2557,11 @@ EOF
 
 sub cmd_report
 {
-    my (@opt_pid, $help);
+    my (@opt_pid, @opt_work_id, $help);
 
     my $ret = GetOptions(
 			 "pid=i"		=> \@opt_pid,
+			 "work-id=i"		=> \@opt_work_id,
 			 "no-error"		=> \$opt_no_error,
 			 "seek-threshold=i"	=> \$opt_seek_threshold,
 			 "relative-seek"	=> \$opt_seek_relative,
@@ -2273,10 +2570,14 @@ sub cmd_report
 
     report_help() if ($help || !$ret);
 
+    # convert values to work-id
+    @opt_work_id = map { to_wid($_) } @opt_work_id;
+
     # Pass parameters as environment variables
     $ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
     $ENV{FSPERF_SCRIPT} = $0;
     $ENV{FSPERF_TARGET_PID} = join(',', @opt_pid);
+    $ENV{FSPERF_TARGET_WID} = join(',', @opt_work_id);
     $ENV{FSPERF_NO_ERROR} = $opt_no_error;
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;

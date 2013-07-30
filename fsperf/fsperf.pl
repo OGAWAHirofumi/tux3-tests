@@ -496,35 +496,77 @@ my %DIR_LONGNAME = (
 		    "c" => "Combined"
 		   );
 
-sub make_io_str($$$$)
-{
-    my ($tv64, $dir, $sector, $nr_sector) = @_;
-    my $time_str = tv64_str($tv64);
-    return "$time_str, $dir, $sector + $nr_sector";
-}
+use constant RWBS_FLUSH		=> (1 << 1);
+use constant RWBS_WRITE		=> (1 << 2);
+use constant RWBS_DISCARD	=> (1 << 3);
+use constant RWBS_READ		=> (1 << 4);
+use constant RWBS_NODIR		=> (1 << 5);
+use constant RWBS_FUA		=> (1 << 6);
+use constant RWBS_RAHEAD	=> (1 << 7);
+use constant RWBS_SYNC		=> (1 << 8);
+use constant RWBS_META		=> (1 << 9);
+use constant RWBS_SECURE	=> (1 << 10);
 
-sub get_dir(@)
+# Exclude FLUSH (FLUSH is conflicting with FUA)
+my %RWBS_FLAG = ("W" => RWBS_WRITE, "D" => RWBS_DISCARD, "R" => RWBS_READ,
+		 "N" => RWBS_NODIR, "F" => RWBS_FUA,     "A" => RWBS_RAHEAD,
+		 "S" => RWBS_SYNC,  "M" => RWBS_META,    "E" => RWBS_SECURE);
+my %RWBS_CHAR = (RWBS_FLUSH() => "F",
+		 RWBS_WRITE() => "W", RWBS_DISCARD() => "D", RWBS_READ() => "R",
+		 RWBS_NODIR() => "N", RWBS_FUA() => "F", RWBS_RAHEAD() => "A",
+		 RWBS_SYNC() => "S", RWBS_META() => "M", RWBS_SECURE() => "E");
+
+sub parse_rwbs(@)
 {
     my ($event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
-    my $dir;
+    my @chars = split("", $rwbs);
+    my $rwbs_flags = 0;
 
-    # Check direction
-    if (index($rwbs, "R") >= 0) {
-	$dir = "r";
-    } elsif (index($rwbs, "W") >= 0) {
-	$dir = "w";
-    } else {
-	my $devname = kdevname($dev);
-	my $tv64 = to_tv64($common_secs, $common_nsecs);
-
-	pr_warn("Unknown direction: ($devname): ",
-		make_io_str($tv64, $rwbs, $sector, $nr_sector));
+    if ($chars[0] eq "F") {
+	$rwbs_flags |= RWBS_FLUSH;
+	shift(@chars);
     }
 
-    return $dir;
+    foreach my $c (@chars) {
+	if ($RWBS_FLAG{$c}) {
+	    $rwbs_flags |= $RWBS_FLAG{$c};
+	} else {
+	    my $devname = kdevname($dev);
+	    my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	    pr_warn("Unknown rwbs flag: ($devname): ",
+		    make_io_str($tv64, $rwbs, $sector, $nr_sector));
+	}
+    }
+
+    return $rwbs_flags;
+}
+
+sub rwbs_str($)
+{
+    my $rwbs_flags = shift;
+    my $str = "";
+
+    my $flag = RWBS_FLUSH;
+    while ($rwbs_flags) {
+	if ($rwbs_flags & $flag) {
+	    $str .= $RWBS_CHAR{$flag};
+	    $rwbs_flags &= ~$flag;
+	}
+	$flag <<= 1;
+    }
+
+    return lc($str);
+}
+
+sub make_io_str($$$$)
+{
+    my ($tv64, $dir, $sector, $nr_sector) = @_;
+    my $time_str = tv64_str($tv64);
+    return "$time_str, $dir, $sector + $nr_sector";
 }
 
 sub fname_plot_bno($)
@@ -795,11 +837,12 @@ sub create_dev_datfile($$)
 # Output I/O position info
 sub add_bno(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $fname = sprintf("bno_%s_%s", lc($EVENT_LONGNAME{$event_name}), $dir);
 
     # Create file if need
@@ -816,7 +859,7 @@ sub add_bno(@)
 # Collect completed blocks and IO/s
 sub add_io(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
@@ -858,11 +901,12 @@ sub update_qdepth($$$)
 # Sanity check of pending I/O in queue
 sub sanity_check_pending(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my %same;
 
     foreach my $d ("r", "w") {
@@ -907,11 +951,12 @@ sub sanity_check_pending(@)
 # Collect Queue(Q) pending I/O
 sub add_queue_pending(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
 
     # Sanity check of pending I/O in queue
@@ -947,11 +992,12 @@ sub update_pending($$$$$)
 # Collect info of FrontMerge pending I/O
 sub add_frontmerge_pending(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
     my $sector_end = $sector + $nr_sector;
 
@@ -980,11 +1026,12 @@ sub add_frontmerge_pending(@)
 # Collect info of merge pending I/O
 sub add_backmerge_pending(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
 
     foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
@@ -1012,11 +1059,12 @@ sub add_backmerge_pending(@)
 # Collect Issue(D) pending I/O
 sub add_issue_pending(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
 
     # Save pending I/O
@@ -1026,11 +1074,12 @@ sub add_issue_pending(@)
 # Complete(C) pending I/O
 sub add_complete_pending(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
     my $pend_str = "pending_$dir";
 
@@ -1153,11 +1202,12 @@ sub add_seek_distance($$$$$)
 # Collect issued block
 sub add_seek(@)
 {
-    my ($dir,
+    my ($rwbs_flags,
 	$event_name, $context, $common_cpu, $common_secs,
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
     my $distance;
 
@@ -1470,10 +1520,16 @@ sub block::block_bio_queue
 	return;
     }
 
-    my $dir = get_dir(@_);
-    if ($dir) {
-	add_bno($dir, @_);
-	add_queue_pending($dir, @_);
+    my $rwbs_flags = parse_rwbs(@_);
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_bno($rwbs_flags, @_);
+	add_queue_pending($rwbs_flags, @_);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
     }
 }
 
@@ -1485,9 +1541,15 @@ sub block::block_bio_frontmerge
 
     update_cur_time($common_secs, $common_nsecs);
 
-    my $dir = get_dir(@_);
-    if ($dir) {
-	add_frontmerge_pending($dir, @_);
+    my $rwbs_flags = parse_rwbs(@_);
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_frontmerge_pending($rwbs_flags, @_);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
     }
 }
 
@@ -1499,9 +1561,15 @@ sub block::block_bio_backmerge
 
     update_cur_time($common_secs, $common_nsecs);
 
-    my $dir = get_dir(@_);
-    if ($dir) {
-	add_backmerge_pending($dir, @_);
+    my $rwbs_flags = parse_rwbs(@_);
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_backmerge_pending($rwbs_flags, @_);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
     }
 }
 
@@ -1544,11 +1612,17 @@ sub block::block_rq_issue
     my @normalized_args = @_;
     splice(@normalized_args, 10, 1);
 
-    my $dir = get_dir(@normalized_args);
-    if ($dir) {
-	add_bno($dir, @normalized_args);
-	add_seek($dir, @normalized_args);
-	add_issue_pending($dir, @normalized_args);
+    my $rwbs_flags = parse_rwbs(@normalized_args);
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_bno($rwbs_flags, @normalized_args);
+	add_seek($rwbs_flags, @normalized_args);
+	add_issue_pending($rwbs_flags, @normalized_args);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
     }
 }
 
@@ -1582,11 +1656,17 @@ sub block::block_rq_complete
     my @normalized_args = @_;
     splice(@normalized_args, 10, 1);
 
-    my $dir = get_dir(@normalized_args);
-    if ($dir) {
-	add_bno($dir, @normalized_args);
-	add_io($dir, @normalized_args);
-	add_complete_pending($dir, @normalized_args);
+    my $rwbs_flags = parse_rwbs(@normalized_args);
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_bno($rwbs_flags, @normalized_args);
+	add_io($rwbs_flags, @normalized_args);
+	add_complete_pending($rwbs_flags, @normalized_args);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
     }
 }
 

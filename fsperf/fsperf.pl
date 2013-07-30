@@ -315,10 +315,10 @@ sub kallsyms_find_by_addr($)
 #
 
 # Using linetype color for state
-my $R_COLOR	= 20;	# TASK_RUNNING color
-my $W_COLOR	= 21;	# cpu wait color
-my $S_COLOR	= 22;	# TASK_INTERRUPTIBLE color
-my $D_COLOR	= 23;	# TASK_UNINTERRUPTIBLE color
+my $R_COLOR	= 30;	# TASK_RUNNING color
+my $W_COLOR	= 31;	# cpu wait color
+my $S_COLOR	= 32;	# TASK_INTERRUPTIBLE color
+my $D_COLOR	= 33;	# TASK_UNINTERRUPTIBLE color
 
 my $plot_missing_char = "-";
 
@@ -343,20 +343,40 @@ if ((GPVAL_VERSION < 4.5) || \\
    (!strstrt(GPVAL_COMPILE_OPTIONS,"+USER_LINETYPES"))) \\
    exit
 
-set linetype 1 linecolor rgb \"royalblue\"
-set linetype 2 linecolor rgb \"forest-green\"
-set linetype 3 linecolor rgb \"dark-turquoise\"
-set linetype 4 linecolor rgb \"dark-pink\"
-set linetype 5 linecolor rgb \"dark-salmon\"
-set linetype 6 linecolor rgb \"dark-violet\"
-set linetype 7 linecolor rgb \"blue\"
-set linetype 8 linecolor rgb \"green\"
-set linetype 9 linecolor rgb \"red\"
+# For block
+set linetype  1 linecolor rgb "royalblue" pointtype 1
+set linetype  2 linecolor rgb "dark-cyan" pointtype 1
+set linetype  3 linecolor rgb "dark-turquoise" pointtype 1
+set linetype  4 linecolor rgb "dark-pink" pointtype 1
+set linetype  5 linecolor rgb "dark-salmon" pointtype 1
+set linetype  6 linecolor rgb "dark-violet" pointtype 1
 
-set linetype ${R_COLOR} linecolor rgb \"forest-green\"
-set linetype ${W_COLOR} linecolor rgb \"red\"
-set linetype ${S_COLOR} linecolor rgb \"dark-gray\"
-set linetype ${D_COLOR} linecolor rgb \"skyblue\"
+set linetype  7 linecolor rgb "web-blue" pointtype 2
+set linetype  8 linecolor rgb "cyan" pointtype 2
+set linetype  9 linecolor rgb "turquoise" pointtype 2
+set linetype 10 linecolor rgb "salmon" pointtype 2
+set linetype 11 linecolor rgb "pink" pointtype 2
+set linetype 12 linecolor rgb "violet" pointtype 2
+
+set linetype 13 linecolor rgb "forest-green" pointtype 3
+set linetype 14 linecolor rgb "web-green" pointtype 3
+set linetype 15 linecolor rgb "dark-green" pointtype 3
+set linetype 16 linecolor rgb "dark-orange" pointtype 3
+set linetype 17 linecolor rgb "dark-khaki" pointtype 3
+set linetype 18 linecolor rgb "dark-goldenrod" pointtype 3
+
+set linetype 19 linecolor rgb "spring-green" pointtype 4
+set linetype 20 linecolor rgb "chartreuse" pointtype 4
+set linetype 21 linecolor rgb "green" pointtype 4
+set linetype 22 linecolor rgb "orange" pointtype 4
+set linetype 23 linecolor rgb "khaki" pointtype 4
+set linetype 24 linecolor rgb "goldenrod" pointtype 4
+
+# For schedule
+set linetype 30 linecolor rgb "forest-green"
+set linetype 31 linecolor rgb "red"
+set linetype 32 linecolor rgb "dark-gray"
+set linetype 33 linecolor rgb "skyblue"
 EOF
 
     close($fh);
@@ -440,13 +460,14 @@ sub output_plot_summary($$)
     }
 
     my $nr_plots = scalar(@plot_gp);
-    my $height = 300 * $nr_plots;
-    my $width = 600;
+    my $height = 400 * $nr_plots;
+    my $width = 800;
+    my $fontscale = 0.8;
 
     print $fh <<"EOF";
 #!/usr/bin/gnuplot
 
-set term png truecolor size ${width}, ${height}
+set term png truecolor size ${width}, ${height} fontscale ${fontscale}
 set output '${devname}_summary.png'
 set lmargin 15
 set multiplot layout ${nr_plots},1 columnsfirst scale 1.0,0.9 offset 0.0,0.0
@@ -492,7 +513,13 @@ my %EVENT_SHORTNAME = (
 		      );
 my %DIR_LONGNAME = (
 		    "r" => "Read",
+		    "rs" => "Read Sync",
+		    "rm" => "Read META",
+		    "rsm" => "Read Sync META",
 		    "w" => "Write",
+		    "ws" => "Write Sync",
+		    "wm" => "Write META",
+		    "wsm" => "Write Sync META",
 		    "c" => "Combined"
 		   );
 
@@ -591,7 +618,7 @@ sub output_plot_bno($)
 		    "to_byte(blk) = (blk * 512)");
 
     my $first = 1;
-    foreach my $dir ("r", "w") {
+    foreach my $dir ("r", "w", "rs", "ws", "rm", "wm", "rsm", "wsm") {
 	foreach my $type ("Queue", "Issue", "Complete") {
 	    my $datafile = sprintf("%s_bno_%s_%s.dat", kdevname($dev),
 				   lc($type), $dir);
@@ -842,7 +869,8 @@ sub add_bno(@)
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
-    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
+    my $rwbs_s = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE |
+					 RWBS_META | RWBS_SYNC));
     my $fname = sprintf("bno_%s_%s", lc($EVENT_LONGNAME{$event_name}), $dir);
 
     # Create file if need

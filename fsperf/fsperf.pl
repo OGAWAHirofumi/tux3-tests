@@ -871,7 +871,7 @@ sub add_bno(@)
 
     my $rwbs_s = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE |
 					 RWBS_META | RWBS_SYNC));
-    my $fname = sprintf("bno_%s_%s", lc($EVENT_LONGNAME{$event_name}), $dir);
+    my $fname = sprintf("bno_%s_%s", lc($EVENT_LONGNAME{$event_name}), $rwbs_s);
 
     # Create file if need
     if (!defined($block_s{$dev}{$fname})) {

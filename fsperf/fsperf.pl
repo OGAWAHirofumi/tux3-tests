@@ -18,6 +18,10 @@ if ($ENV{'PERF_EXEC_PATH'}) {
     import Perf::Trace::Util;
 }
 
+# For debugging
+#use Carp 'verbose';
+#$SIG{ __DIE__ } = sub { Carp::confess( @_ ) };
+
 use strict;
 use warnings;
 use bignum;
@@ -94,6 +98,37 @@ sub max($$)
     return $a;
 }
 
+# bignum in some version can't handle undef as 0. So, this checks
+# undef, then initialize or add.
+sub num_add($$)
+{
+    if (defined($_[0])) {
+	$_[0] += $_[1];
+    } else {
+	$_[0] = $_[1];
+    }
+}
+
+sub num_sub($$)
+{
+    if (defined($_[0])) {
+	$_[0] -= $_[1];
+    } else {
+	$_[0] = -$_[1];
+    }
+}
+
+# helper for max/min
+sub num_max($$)
+{
+    $_[0] = max($_[0], $_[1]);
+}
+
+sub num_min($$)
+{
+    $_[0] = min($_[0], $_[1]);
+}
+
 use constant NSEC_PER_SEC => 1000000000;
 
 sub to_tv64($$)
@@ -158,8 +193,8 @@ sub update_cur_time($$)
     my $time = to_tv64($secs, $nsecs);
 
     $cur_time = $secs;
-    $perf_start = min($perf_start, $time);
-    $perf_end = max($perf_end, $time);
+    num_min($perf_start, $time);
+    num_max($perf_end, $time);
 }
 
 sub calc_start_end_time
@@ -892,15 +927,15 @@ sub add_io(@)
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
-    $block_s{$dev}{"complete_blocks"}[$cur_time] += $nr_sector;
-    $block_s{$dev}{"complete_io"}[$cur_time]++;
+    num_add($block_s{$dev}{"complete_blocks"}[$cur_time], $nr_sector);
+    num_add($block_s{$dev}{"complete_io"}[$cur_time], 1);
 
-    $block_s{$dev}{"req_blocks"} += $nr_sector;
-    $block_s{$dev}{"req_nr"}++;
+    num_add($block_s{$dev}{"req_blocks"}, $nr_sector);
+    num_add($block_s{$dev}{"req_nr"}, 1);
     # Remember maximum sectors on single request
-    $block_s{$dev}{"req_max"} = max($block_s{$dev}{"req_max"}, $nr_sector);
+    num_max($block_s{$dev}{"req_max"}, $nr_sector);
     # Remember minimum sectors on single request
-    $block_s{$dev}{"req_min"} = min($block_s{$dev}{"req_min"}, $nr_sector);
+    num_min($block_s{$dev}{"req_min"}, $nr_sector);
 }
 
 # Update queue depth
@@ -911,9 +946,8 @@ sub update_qdepth($$$)
     my $num = shift;
 
     # Modify queue depth
-    $block_s{$dev}{"qdepth"} += $num;
-    $block_s{$dev}{"qdepth_max"} =
-	max($block_s{$dev}{"qdepth_max"}, $block_s{$dev}{"qdepth"});
+    num_add($block_s{$dev}{"qdepth"}, $num);
+    num_max($block_s{$dev}{"qdepth_max"}, $block_s{$dev}{"qdepth"});
 
     my $fname = "qdepth_c";
     # Create file if need
@@ -1149,19 +1183,15 @@ sub add_complete_pending(@)
 
     # Remember block_s of I/O latency
     foreach my $d ($dir, "c") {
-	$block_s{$dev}{"lat_q2c_total_$d"} += $lat_q2c;
-	$block_s{$dev}{"lat_q2c_max_$d"} =
-	    max($block_s{$dev}{"lat_q2c_max_$d"}, $lat_q2c);
-	$block_s{$dev}{"lat_q2c_min_$d"} =
-	    min($block_s{$dev}{"lat_q2c_min_$d"}, $lat_q2c);
-	$block_s{$dev}{"lat_q2c_nr_$d"}++;
+	num_add($block_s{$dev}{"lat_q2c_total_$d"}, $lat_q2c);
+	num_max($block_s{$dev}{"lat_q2c_max_$d"}, $lat_q2c);
+	num_min($block_s{$dev}{"lat_q2c_min_$d"}, $lat_q2c);
+	num_add($block_s{$dev}{"lat_q2c_nr_$d"}, 1);
 
-	$block_s{$dev}{"lat_d2c_total_$d"} += $lat_d2c;
-	$block_s{$dev}{"lat_d2c_nr_$d"}++;
-	$block_s{$dev}{"lat_d2c_max_$d"} =
-	    max($block_s{$dev}{"lat_d2c_max_$d"}, $lat_d2c);
-	$block_s{$dev}{"lat_d2c_min_$d"} =
-	    min($block_s{$dev}{"lat_d2c_min_$d"}, $lat_d2c);
+	num_add($block_s{$dev}{"lat_d2c_total_$d"}, $lat_d2c);
+	num_add($block_s{$dev}{"lat_d2c_nr_$d"}, 1);
+	num_max($block_s{$dev}{"lat_d2c_max_$d"}, $lat_d2c);
+	num_min($block_s{$dev}{"lat_d2c_min_$d"}, $lat_d2c);
     }
 
     for my $d ($dir, "c") {
@@ -1213,8 +1243,8 @@ sub add_seek_distance($$$$$)
 				  $block_s{$dev}{"last_start_$dir"},
 				  $block_s{$dev}{"last_end_$dir"});
 	if ($distance > $opt_seek_threshold) {
-	    $block_s{$dev}{"seek_nr_$dir"}[$cur_time]++;
-	    $block_s{$dev}{"seek_distance_$dir"}[$cur_time] += $distance;
+	    num_add($block_s{$dev}{"seek_nr_$dir"}[$cur_time], 1);
+	    num_add($block_s{$dev}{"seek_distance_$dir"}[$cur_time], $distance);
 	} else {
 	    $distance = 0;
 	}
@@ -1283,11 +1313,14 @@ sub block_main
 	my $fh_blk = create_dev_datfile($dev, "blkps_c");
 	my $fh_io = create_dev_datfile($dev, "iops_c");
 	for my $t (to_sec($perf_start)..to_sec($perf_end)) {
-	    $total_blk += $complete_blocks->[$t];
-	    print $fh_blk "$t.5 ", ($complete_blocks->[$t] || 0), "\n";
+	    my $blocks = ($complete_blocks->[$t] || 0);
+	    my $io = ($complete_io->[$t] || 0);
 
-	    $total_io += ($complete_io->[$t] || 0);
-	    print $fh_io "$t.5 ", ($complete_io->[$t] || 0), "\n";
+	    $total_blk += $blocks;
+	    print $fh_blk "$t.5 $blocks\n";
+
+	    $total_io += $io;
+	    print $fh_io "$t.5 $io\n";
 	}
 	close($fh_blk);
 	close($fh_io);
@@ -1341,11 +1374,15 @@ EOF
   Dev       Avg       Min       Max    (1 == 512 bytes)
 EOF
     foreach my $dev (keys %block_s) {
+	my $req_blocks = $block_s{$dev}{"req_blocks"} || 0;
+	my $req_nr = $block_s{$dev}{"req_nr"} || 0;
+	my $req_max = $block_s{$dev}{"req_max"} || 0;
+	my $req_min = $block_s{$dev}{"req_min"} || 0;
+
 	# Output short summary
-	my $avg = $block_s{$dev}{"req_blocks"} / $block_s{$dev}{"req_nr"};
+	my $avg = $req_blocks / $req_nr;
 	printf $log " %4s  %8.2f  %8u  %8u\n",
-	    kdevname($dev), $avg, $block_s{$dev}{"req_min"},
-	    $block_s{$dev}{"req_max"};
+	    kdevname($dev), $avg, $req_min, $req_max;
     }
 
     # Summary Queue depth
@@ -1412,6 +1449,7 @@ EOF
 	    for my $t (to_sec($perf_start)..to_sec($perf_end)) {
 		my $nr = $block_s{$dev}{$fname_nr}[$t] || 0;
 		my $distance = $block_s{$dev}{$fname_distance}[$t] || 0;
+
 		$total_nr += $nr;
 		$total_distance += $distance;
 		print $fh "$t.5 ", $nr, "\n";
@@ -1445,7 +1483,7 @@ EOF
 	foreach my $dir ("r", "w") {
 	    if ($block_s{$dev}{"pending_$dir"}) {
 		foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
-		    my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"};
+		    my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"} || 0;
 		    my $q_time = $block_s{$dev}{"pending_$dir"}{$s}{"Q"} || 0;
 		    my $d_time = $block_s{$dev}{"pending_$dir"}{$s}{"D"} || 0;
 		    my $q_str = tv64_str($q_time);
@@ -1861,17 +1899,17 @@ sub sched_stat_process
     print $fh "@cols\n";
 
     # Remember stat
-    $sched_s{$id}{start} = min($sched_s{$id}{start}, $start);
-    $sched_s{$id}{end} = max($sched_s{$id}{end}, $end);
     $sched_s{$id}{comm} = $comm;
-    $sched_s{$id}{$type}{total} += $elapse;
+    num_min($sched_s{$id}{start}, $start);
+    num_max($sched_s{$id}{end}, $end);
+    num_add($sched_s{$id}{$type}{total}, $elapse);
     # Add elapse to proper position
     my $cur_sec = to_sec($end);
     while ($elapse > 0) {
 	my $cur_start = to_tv64($cur_sec, 0);
 	my $cur_elapse = min($end - $cur_start, $elapse);
 
-	$sched_s{$id}{$type}{sec}[$cur_sec] += $cur_elapse;
+	num_add($sched_s{$id}{$type}{sec}[$cur_sec], $cur_elapse);
 	$elapse -= $cur_elapse;
 
 	$end = $cur_start;
@@ -2138,8 +2176,8 @@ sub sched_main
 
     # Add stat from last switch to now
     foreach my $pid (keys(%switch_state)) {
-	my $type = $switch_state{$pid}{state};
 	my $comm = $switch_state{$pid}{comm};
+	my $type = $switch_state{$pid}{state};
 	my $time = $switch_state{$pid}{time};
 
 	my $elapse = $perf_end - $time;
@@ -2154,13 +2192,13 @@ sub sched_main
 EOF
     foreach my $id (sort { id_for_cmp($a) <=> id_for_cmp($b) } keys %sched_s) {
 	my $comm = $sched_s{$id}{comm};
-	my $start_time = $sched_s{$id}{start};
-	my $end_time = $sched_s{$id}{end};
-	my $run_time = $sched_s{$id}{R}{total};
-	my $wait_time = $sched_s{$id}{W}{total};
-	my $sleep_time = $sched_s{$id}{S}{total};
-	my $block_time = $sched_s{$id}{D}{total};
-	my $elapse;
+	my $start_time = $sched_s{$id}{start} || 0;
+	my $end_time = $sched_s{$id}{end} || 0;
+	my $run_time = $sched_s{$id}{R}{total} || 0;
+	my $wait_time = $sched_s{$id}{W}{total} || 0;
+	my $sleep_time = $sched_s{$id}{S}{total} || 0;
+	my $block_time = $sched_s{$id}{D}{total} || 0;
+	my $elapse = 0;
 
 	if (!is_wid($id)) {
 	    # Elapse time is whole time of task
@@ -2324,7 +2362,7 @@ sub workqueue::workqueue_execute_end
 	if (not $sched_s{$wid}{comm}) {
 	    $sched_s{$wid}{comm} = $wq_state{$common_pid}{$wid}{sym};
 	}
-	$sched_s{$wid}{elapse} += $elapse;
+	num_add($sched_s{$wid}{elapse}, $elapse);
     }
 }
 

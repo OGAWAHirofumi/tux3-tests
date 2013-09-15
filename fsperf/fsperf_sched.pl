@@ -17,6 +17,57 @@ my %time;
 my %proc;
 my @callchain_db;
 
+sub min($$)
+{
+    my $a = shift;
+    my $b = shift;
+    return $a if (!defined($b));
+    return $b if (!defined($a));
+    return $b if ($a > $b);
+    return $a;
+}
+
+sub max($$)
+{
+    my $a = shift;
+    my $b = shift;
+    return $a if (!defined($b));
+    return $b if (!defined($a));
+    return $b if ($a < $b);
+    return $a;
+}
+
+# bignum in some version can't handle undef as 0. So, this checks
+# undef, then initialize or add.
+sub num_add($$)
+{
+    if (defined($_[0])) {
+	$_[0] += $_[1];
+    } else {
+	$_[0] = $_[1];
+    }
+}
+
+sub num_sub($$)
+{
+    if (defined($_[0])) {
+	$_[0] -= $_[1];
+    } else {
+	$_[0] = -$_[1];
+    }
+}
+
+# helper for max/min
+sub num_max($$)
+{
+    $_[0] = max($_[0], $_[1]);
+}
+
+sub num_min($$)
+{
+    $_[0] = min($_[0], $_[1]);
+}
+
 sub sec_to_ns($)
 {
     my $sec = shift;
@@ -156,7 +207,7 @@ sub process_event_sched_stat_runtime(@)
 	my $runtime = $3;
 	my $vruntime = $4;
 
-	$proc{$pid}{"runtime_ns"} += $runtime;
+	num_add($proc{$pid}{"runtime_ns"}, $runtime);
     } else {
 	die;
     }
@@ -176,25 +227,13 @@ sub process_event_sched_stat_sleep(@)
 	if (defined($proc{$pid}{"reason"})) {
 	    my $id = add_callchain($proc{$pid}{"reason"});
 
-	    $proc{$pid}{"sleep_nr"}++;
-	    $proc{$pid}{"sleep_ns"} += $delay;
+	    num_add($proc{$pid}{"sleep_nr"}, 1);
+	    num_add($proc{$pid}{"sleep_ns"}, $delay);
 
-	    $proc{$pid}{"sleep"}{$id}{"nr"}++;
-	    $proc{$pid}{"sleep"}{$id}{"ns"} += $delay;
-	    if (!defined($proc{$pid}{"sleep"}{$id}{"min"})) {
-		$proc{$pid}{"sleep"}{$id}{"min"} = $delay;
-	    } else {
-		if ($proc{$pid}{"sleep"}{$id}{"min"} > $delay) {
-		    $proc{$pid}{"sleep"}{$id}{"min"} = $delay;
-		}
-	    }
-	    if (!defined($proc{$pid}{"sleep"}{$id}{"max"})) {
-		$proc{$pid}{"sleep"}{$id}{"max"} = $delay;
-	    } else {
-		if ($proc{$pid}{"sleep"}{$id}{"max"} < $delay) {
-		    $proc{$pid}{"sleep"}{$id}{"max"} = $delay;
-		}
-	    }
+	    num_add($proc{$pid}{"sleep"}{$id}{"nr"}, 1);
+	    num_add($proc{$pid}{"sleep"}{$id}{"ns"}, $delay);
+	    num_min($proc{$pid}{"sleep"}{$id}{"min"}, $delay);
+	    num_max($proc{$pid}{"sleep"}{$id}{"max"}, $delay);
 	}
     } else {
 	die;
@@ -215,25 +254,13 @@ sub process_event_sched_stat_blocked(@)
 	if (defined($proc{$pid}{"reason"})) {
 	    my $id = add_callchain($proc{$pid}{"reason"});
 
-	    $proc{$pid}{"block_nr"}++;
-	    $proc{$pid}{"block_ns"} += $delay;
+	    num_add($proc{$pid}{"block_nr"}, 1);
+	    num_add($proc{$pid}{"block_ns"}, $delay);
 
-	    $proc{$pid}{"block"}{$id}{"nr"}++;
-	    $proc{$pid}{"block"}{$id}{"ns"} += $delay;
-	    if (!defined($proc{$pid}{"block"}{$id}{"min"})) {
-		$proc{$pid}{"block"}{$id}{"min"} = $delay;
-	    } else {
-		if ($proc{$pid}{"block"}{$id}{"min"} > $delay) {
-		    $proc{$pid}{"block"}{$id}{"min"} = $delay;
-		}
-	    }
-	    if (!defined($proc{$pid}{"block"}{$id}{"max"})) {
-		$proc{$pid}{"block"}{$id}{"max"} = $delay;
-	    } else {
-		if ($proc{$pid}{"block"}{$id}{"max"} < $delay) {
-		    $proc{$pid}{"block"}{$id}{"max"} = $delay;
-		}
-	    }
+	    num_add($proc{$pid}{"block"}{$id}{"nr"}, 1);
+	    num_add($proc{$pid}{"block"}{$id}{"ns"}, $delay);
+	    num_min($proc{$pid}{"block"}{$id}{"min"}, $delay);
+	    num_max($proc{$pid}{"block"}{$id}{"max"}, $delay);
 	}
     } else {
 	die;

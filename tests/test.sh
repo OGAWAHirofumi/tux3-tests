@@ -4,10 +4,22 @@ PATH=`pwd`/bin:$PATH
 
 check_core()
 {
-    if [ -r core ]; then
-        echo "==== core ===="
-        gdb --batch --eval-command=bt tux3 core
-        exit 1
+    COMMAND="tux3"
+    HANDLED=0
+
+    for core  in core*; do
+	if echo $core | egrep '^core(\.[0-9]+)?$' > /dev/null; then
+	    if [ -r $core ]; then
+		echo "==== $core ===="
+		gdb --batch --eval-command=bt $COMMAND $core
+
+		HANDLED=$(($HANDLED + 1))
+	    fi
+	fi
+    done
+
+    if [ $HANDLED -ne 0 ]; then
+	exit 1
     fi
 }
 

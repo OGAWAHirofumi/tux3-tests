@@ -927,8 +927,10 @@ sub add_io(@)
 	$common_nsecs, $common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
-    num_add($block_s{$dev}{"complete_blocks"}[$cur_time], $nr_sector);
-    num_add($block_s{$dev}{"complete_io"}[$cur_time], 1);
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
+    num_add($block_s{$dev}{"complete_blocks_$dir"}[$cur_time], $nr_sector);
+    num_add($block_s{$dev}{"complete_io_$dir"}[$cur_time], 1);
+    pr_warn("add_io: unknown dir ($dir)") if ($dir ne "r" and $dir ne "w");
 
     num_add($block_s{$dev}{"req_blocks"}, $nr_sector);
     num_add($block_s{$dev}{"req_nr"}, 1);
@@ -1305,29 +1307,41 @@ sub block_main
 
     # Output MB/s and IO/s
     foreach my $dev (keys %block_s) {
-	my $complete_blocks = $block_s{$dev}{"complete_blocks"};
-	my $complete_io = $block_s{$dev}{"complete_io"};
-	my $total_blk = 0;
-	my $total_io = 0;
+	my %total_blk = ("r" => 0, "w" => 0);
+	my %total_io = ("r" => 0, "w" => 0);
 
 	my $fh_blk = create_dev_datfile($dev, "blkps_c");
 	my $fh_io = create_dev_datfile($dev, "iops_c");
 	for my $t (to_sec($perf_start)..to_sec($perf_end)) {
-	    my $blocks = ($complete_blocks->[$t] || 0);
-	    my $io = ($complete_io->[$t] || 0);
+	    my $blkps_c = 0;
+	    my $iops_c = 0;
 
-	    $total_blk += $blocks;
-	    print $fh_blk "$t.5 $blocks\n";
+	    foreach my $dir ("r", "w") {
+		my $complete_blocks = $block_s{$dev}{"complete_blocks_$dir"};
+		my $complete_io = $block_s{$dev}{"complete_io_$dir"};
+		my $blocks = ($complete_blocks->[$t] || 0);
+		my $io = ($complete_io->[$t] || 0);
 
-	    $total_io += $io;
-	    print $fh_io "$t.5 $io\n";
+		$total_blk{$dir} += $blocks;
+		$total_io{$dir} += $io;
+
+		$blkps_c += $blocks;
+		$iops_c += $io;
+	    }
+
+	    print $fh_blk "$t.5 $blkps_c\n";
+	    print $fh_io "$t.5 $iops_c\n";
 	}
 	close($fh_blk);
 	close($fh_io);
 
 	# Remember for short summary
-	$result{$dev}{"total_blk"} = $total_blk;
-	$result{$dev}{"total_io"} = $total_io;
+	foreach my $dir ("r", "w") {
+	    $result{$dev}{"total_blk_$dir"} = $total_blk{$dir};
+	    $result{$dev}{"total_io_$dir"} = $total_io{$dir};
+	    num_add($result{$dev}{"total_blk_c"}, $total_blk{$dir});
+	    num_add($result{$dev}{"total_io_c"}, $total_io{$dir});
+	}
 
 	# Create plot script
 	output_plot_bno($dev);
@@ -1354,16 +1368,19 @@ EOF
 
                       IO (Complete)
 -----------------------------------------------------------------
-  Dev        MB/s     Total(MB)         IO/s     Total(IO)
+  Dev  Direction     MB/s     Total(MB)         IO/s     Total(IO)
 EOF
     foreach my $dev (keys %result) {
-	my $total_mb = ($result{$dev}{"total_blk"} * 512) / (1024 * 1024);
-	my $total_io = $result{$dev}{"total_io"};
-
-	printf $log " %4s    %8.2f      %8.2f     %8.2f      %8u\n",
-	    kdevname($dev), $total_mb / to_sec_nsec($elapse),
-	    $total_mb, $total_io / to_sec_nsec($elapse),
-	    $total_io;
+	foreach my $dir ("r", "w", "c") {
+	    my $total_blk = $result{$dev}{"total_blk_$dir"};
+	    my $total_io = $result{$dev}{"total_io_$dir"};
+	    my $total_mb = ($total_blk * 512) / (1024 * 1024);
+	    printf $log " %4s   %8s %8.2f      %8.2f     %8.2f      %8u\n",
+		kdevname($dev), $DIR_LONGNAME{$dir},
+		$total_mb / to_sec_nsec($elapse),
+		$total_mb, $total_io / to_sec_nsec($elapse),
+		$total_io;
+	}
     }
 
     # Summary Request size

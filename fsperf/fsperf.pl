@@ -1064,13 +1064,17 @@ sub add_frontmerge_pending(@)
     my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
     my $sector_end = $sector + $nr_sector;
+    my $pend_str = "pending_$dir";
 
-    foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
+    foreach my $s (keys($block_s{$dev}{$pend_str})) {
+	# There was no queue event for this
+	next if (!defined($block_s{$dev}{$pend_str}{$s}{"nr"}));
+
 	if ($sector_end == $s) {
-	    my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"};
+	    my $nr = $block_s{$dev}{$pend_str}{$s}{"nr"};
 
 	    # Remove old pending I/O
-	    delete($block_s{$dev}{"pending_$dir"}{$sector});
+	    delete($block_s{$dev}{$pend_str}{$sector});
 
 	    # Front merge
 	    $nr_sector += $nr;
@@ -1083,8 +1087,8 @@ sub add_frontmerge_pending(@)
     }
 
     my $devname = kdevname($dev);
-    die "Couldn't find FrontMerge: ($devname): ",
-	make_io_str($time, $dir, $sector, $nr_sector), "\n";
+    pr_warn("$event_name: Couldn't find FrontMerge: ($devname): ",
+	    make_io_str($time, $dir, $sector, $nr_sector));
 }
 
 # Collect info of merge pending I/O
@@ -1097,13 +1101,17 @@ sub add_backmerge_pending(@)
 
     my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
+    my $pend_str = "pending_$dir";
 
-    foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
-	my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"};
+    foreach my $s (keys($block_s{$dev}{$pend_str})) {
+	# There was no queue event for this
+	next if (!defined($block_s{$dev}{$pend_str}{$s}{"nr"}));
+
+	my $nr = $block_s{$dev}{$pend_str}{$s}{"nr"};
 
 	if ($s + $nr == $sector) {
 	    # Remove old pending I/O
-	    delete($block_s{$dev}{"pending_$dir"}{$sector});
+	    delete($block_s{$dev}{$pend_str}{$sector});
 
 	    # Back merge
 	    $nr += $nr_sector;
@@ -1116,8 +1124,8 @@ sub add_backmerge_pending(@)
     }
 
     my $devname = kdevname($dev);
-    die "Couldn't find BackMerge: ($devname): ",
-	make_io_str($time, $dir, $sector, $nr_sector), "\n";
+    pr_warn("$event_name: Couldn't find BackMerge: ($devname): ",
+	    make_io_str($time, $dir, $sector, $nr_sector));
 }
 
 # Collect Issue(D) pending I/O
@@ -1147,7 +1155,8 @@ sub add_complete_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
     my $pend_str = "pending_$dir";
 
-    if (!defined($block_s{$dev}{$pend_str}{$sector})) {
+    if (!defined($block_s{$dev}{$pend_str}{$sector}) ||
+	!defined($block_s{$dev}{$pend_str}{$sector}{"nr"})) {
 	my $devname = kdevname($dev);
 	pr_warn("$event_name: Missing queue event: ($devname): ",
 		make_io_str($time, $dir, $sector, $nr_sector));

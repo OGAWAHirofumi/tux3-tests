@@ -5,6 +5,10 @@
 # 	perf script -s fsperf.pl -i perf-sched.data
 #
 
+# For debugging
+#use Carp;
+#$SIG{ __DIE__ } = sub { Carp::confess( @_ ) };
+
 if ($ENV{'PERF_EXEC_PATH'}) {
     no warnings;
     use lib "$ENV{'PERF_EXEC_PATH'}/scripts/perl/Perf-Trace-Util/lib";
@@ -1966,6 +1970,12 @@ sub sched_stat
 		my $work_end = $wq_state{$pid}{$wid}{end} || $time;
 		my $sym = $wq_state{$pid}{$wid}{sym};
 
+		# There was no workqueue_execute_start event
+		if (!defined($wq_state{$pid}{$wid}{start})) {
+		    pr_warn("$wid is missing workqueue_execute_start event");
+		    next;
+		}
+
 		# Stat is in workqueue work?
 		if ($work_start < $time and $time_start < $work_end) {
 		    my $start = max($time_start, $work_start);
@@ -2224,7 +2234,7 @@ EOF
 	my $wait_time = $sched_s{$id}{W}{total} || 0;
 	my $sleep_time = $sched_s{$id}{S}{total} || 0;
 	my $block_time = $sched_s{$id}{D}{total} || 0;
-	my $elapse = 0;
+	my $elapse;
 
 	if (!is_wid($id)) {
 	    # Elapse time is whole time of task
@@ -2239,7 +2249,7 @@ EOF
 		tv64_str($start_time), tv64_str($end_time), tv64_str($elapse);
 	} else {
 	    # Elapse time is only spent on work
-	    $elapse = $sched_s{$id}{elapse};
+	    $elapse = $sched_s{$id}{elapse} || 0;
 
 	    print $log <<"EOF";
 ----------------------------------------------------------
@@ -2257,15 +2267,15 @@ EOF
                      Running(sec)                  CPU wait(sec)
 EOF
 	printf $log "       %16s (%6.2f%%)     %16s (%6.2f%%)\n",
-	    tv64_str($run_time), ($run_time * 100) / $elapse,
-	    tv64_str($wait_time), ($wait_time * 100) / $elapse;
+	    tv64_str($run_time), $elapse ? ($run_time * 100) / $elapse : 0,
+	    tv64_str($wait_time), $elapse ? ($wait_time * 100) / $elapse : 0;
 
 	print $log <<"EOF";
                        Sleep(sec)                     Block(sec)
 EOF
 	printf $log "       %16s (%6.2f%%)     %16s (%6.2f%%)\n",
-	    tv64_str($sleep_time), ($sleep_time * 100) / $elapse,
-	    tv64_str($block_time), ($block_time * 100) / $elapse;
+	    tv64_str($sleep_time), $elapse ? ($sleep_time * 100) / $elapse : 0,
+	    tv64_str($block_time), $elapse ? ($block_time * 100) / $elapse : 0;
 
 	my $fh = create_id_datfile($id, "stat");
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
@@ -2389,6 +2399,9 @@ sub workqueue::workqueue_execute_end
 	    $sched_s{$wid}{comm} = $wq_state{$common_pid}{$wid}{sym};
 	}
 	num_add($sched_s{$wid}{elapse}, $elapse);
+    } else {
+	# There was no workqueue_execute_start event
+	$sched_s{$wid}{comm} = "[unknown]";
     }
 }
 

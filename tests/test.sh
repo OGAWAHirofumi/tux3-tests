@@ -134,7 +134,7 @@ for blocksize in 512 4096; do
     mount_tux3
     run_test -b fsx-linux	\
 	-S 0			\
-	-WRFH			\
+	-FH			\
 	-N $NUM_OP		\
 	-l $SIZE		\
 	$TUX3_MNT/testfile

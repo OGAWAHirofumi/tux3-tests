@@ -979,7 +979,7 @@ sub sanity_check_pending(@)
 
     foreach my $d ("r", "w") {
 	if ($block_s{$dev}{"pending_$d"}) {
-	    foreach my $s (keys($block_s{$dev}{"pending_$d"})) {
+	    foreach my $s (keys(%{$block_s{$dev}{"pending_$d"}})) {
 		# Check if there is no same block address
 		if ($sector <= $s and $s < $sector + $nr_sector) {
 		    # There is same block address
@@ -1070,7 +1070,7 @@ sub add_frontmerge_pending(@)
     my $sector_end = $sector + $nr_sector;
     my $pend_str = "pending_$dir";
 
-    foreach my $s (keys($block_s{$dev}{$pend_str})) {
+    foreach my $s (keys(%{$block_s{$dev}{$pend_str}})) {
 	# There was no queue event for this
 	next if (!defined($block_s{$dev}{$pend_str}{$s}{"nr"}));
 
@@ -1107,7 +1107,7 @@ sub add_backmerge_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
     my $pend_str = "pending_$dir";
 
-    foreach my $s (keys($block_s{$dev}{$pend_str})) {
+    foreach my $s (keys(%{$block_s{$dev}{$pend_str}})) {
 	# There was no queue event for this
 	next if (!defined($block_s{$dev}{$pend_str}{$s}{"nr"}));
 
@@ -1512,7 +1512,7 @@ EOF
 
 	foreach my $dir ("r", "w") {
 	    if ($block_s{$dev}{"pending_$dir"}) {
-		foreach my $s (keys($block_s{$dev}{"pending_$dir"})) {
+		foreach my $s (keys(%{$block_s{$dev}{"pending_$dir"}})) {
 		    my $nr = $block_s{$dev}{"pending_$dir"}{$s}{"nr"} || 0;
 		    my $q_time = $block_s{$dev}{"pending_$dir"}{$s}{"Q"} || 0;
 		    my $d_time = $block_s{$dev}{"pending_$dir"}{$s}{"D"} || 0;
@@ -1962,7 +1962,7 @@ sub sched_stat
 
     # Check workqueue work
     if ($wq_state{$pid}) {
-	foreach my $wid (keys($wq_state{$pid})) {
+	foreach my $wid (keys(%{$wq_state{$pid}})) {
 	    if (is_interesting_wid($wid)) {
 		my $time_start = $time - $elapse;
 		my $work_start = $wq_state{$pid}{$wid}{start};

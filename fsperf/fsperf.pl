@@ -2593,10 +2593,41 @@ sub make_devmap
     return %devmap;
 }
 
-sub make_filter_str(@)
+use constant FILTER_DEV => "dev";
+use constant FILTER_NAME => "name";
+use constant FILTER_BDI => "bdi";
+
+sub make_filter_str($@)
+{
+    my $type = shift;
+    my @kdevs = @_;
+
+    my $or_sep = "";
+    my $filter;
+    foreach my $kdev (@kdevs) {
+	$filter .= $or_sep;
+
+	if ($type eq FILTER_DEV) {
+	    $filter .= "dev==$kdev";
+	} elsif ($type eq FILTER_NAME) {
+	    $filter .= sprintf("name==%u:%u", kmajor($kdev), kminor($kdev));
+	} elsif ($type eq FILTER_BDI) {
+	    $filter .= sprintf("bdi==%u:%u", kmajor($kdev), kminor($kdev));
+	} else {
+	    die "Unknown filter type: $type";
+	}
+
+	$or_sep = "||";
+    }
+
+    return $filter;
+}
+
+sub get_device_kdev(@)
 {
     my @devices = @_;
     my %devmap = make_devmap();
+    my @kdevs;
 
     my $or_sep = "";
     my $filter;
@@ -2608,36 +2639,40 @@ sub make_filter_str(@)
 	}
 	my $whole_disk = $devmap{$dev};
 
-	$filter .= $or_sep;
-	$filter .= "dev==$whole_disk";
-
-	$or_sep = "||";
+	push(@kdevs, $whole_disk);
     }
 
-    return $filter;
+    return @kdevs;
 }
 
 sub run_record
 {
-    my $dev_filter = shift;
+    my @kdevs = @_;
 
-    my @block_events = (
-#			"block:block_rq_remap",
-#			"block:block_bio_remap",
-#			"block:block_split",
-#			"block:block_unplug",
-#			"block:block_plug",
-#			"block:block_sleeprq",
-#			"block:block_getrq",
-			"block:block_bio_queue",
-			"block:block_bio_frontmerge",
-			"block:block_bio_backmerge",
-			"block:block_bio_complete",
-			"block:block_rq_issue",
-#			"block:block_rq_insert",
-			"block:block_rq_complete",
-#			"block:block_rq_requeue",
-#			"block:block_rq_abort",
+    my %block_events = (
+#			"block:block_rq_remap" => FILTER_DEV,
+#			"block:block_bio_remap" => FILTER_DEV,
+#			"block:block_split" => FILTER_DEV,
+#			"block:block_unplug" => undef,
+#			"block:block_plug" => undef,
+#			"block:block_sleeprq" => FILTER_DEV,
+#			"block:block_getrq" => FILTER_DEV,
+			"block:block_bio_queue" => FILTER_DEV,
+			"block:block_bio_frontmerge" => FILTER_DEV,
+			"block:block_bio_backmerge" => FILTER_DEV,
+			"block:block_bio_complete" => FILTER_DEV,
+			"block:block_rq_issue" => FILTER_DEV,
+#			"block:block_rq_insert" => FILTER_DEV,
+			"block:block_rq_complete" => FILTER_DEV,
+#			"block:block_rq_requeue" => FILTER_DEV,
+#			"block:block_rq_abort" => FILTER_DEV,
+
+#			"writeback:writeback_start" => FILTER_NAME,
+#			"writeback:writeback_written" => FILTER_NAME,
+#			"writeback:writeback_pages_written" => undef,
+#			"writeback:global_dirty_state" => undef,
+#			"writeback:bdi_dirty_ratelimit" => FILTER_BDI,
+#			"writeback:balance_dirty_pages" => FILTER_BDI,
 		       );
     my @sched_events = (
 			# sched events
@@ -2681,10 +2716,13 @@ sub run_record
 
     # Make block events cmdline
     my @cmd = ("perf", "record", "-a", "-c1", "-o", $perf_block_data);
-    foreach my $event (@block_events) {
+    foreach my $event (sort(keys(%block_events))) {
 	push(@cmd, "-e", $event);
-	if ($dev_filter) {
-	    push(@cmd, "--filter", $dev_filter);
+	# Add filter
+	if ($block_events{$event} && @kdevs) {
+	    my $filter_type = $block_events{$event};
+	    my $filter = make_filter_str($filter_type, @kdevs);
+	    push(@cmd, "--filter", $filter);
 	}
     }
     push(@cmd, "--");
@@ -2713,8 +2751,8 @@ sub cmd_record
 
     record_help() if ($help || !$ret);
 
-    my $dev_filter = make_filter_str(@opt_device);
-    run_record($dev_filter);
+    my @kdevs = get_device_kdev(@opt_device);
+    run_record(@kdevs);
 }
 
 sub report_help

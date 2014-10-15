@@ -44,6 +44,8 @@ my $opt_no_error = 0;
 my $opt_seek_threshold = 0;
 # 0: absolute distance, 1: relative distance
 my $opt_seek_relative = 0;
+# Don't run sched events
+my $opt_no_sched = 0;
 
 my @opt_target_pid = ();
 my @opt_target_wid = ();
@@ -529,6 +531,14 @@ EOF
     # Move .png to current dir
     $cmd = "mv $output_dir/*.png .";
     safe_system($cmd);
+}
+
+sub graph_main
+{
+    # Create summary plot
+    foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {
+	output_plot_summary($dev, 1);
+    }
 }
 
 ##################################
@@ -2295,9 +2305,9 @@ EOF
     close($log);
 
     # Create summary plot
-    foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {
-	output_plot_summary($dev, 1);
-    }
+#    foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {
+#	output_plot_summary($dev, 1);
+#    }
 }
 
 
@@ -2467,7 +2477,24 @@ my %mode_table = (
 					   },
 		  FSPERF_MODE_SCHED	=> {
 					    func => \&sched_main,
+					    next => "FSPERF_MODE_GRAPH",
+					    data => undef,
+					   },
+		  FSPERF_MODE_GRAPH	=> {
+					    func => \&graph_main,
 					    next => undef,
+					    data => undef,
+					   },
+
+		  # For $opt_no_sched
+		  FSPERF_MODE_REPORT2	=> {
+					    func => undef,
+					    next => "FSPERF_MODE_BLOCK2",
+					    data => $perf_block_data,
+					   },
+		  FSPERF_MODE_BLOCK2	=> {
+					    func => \&block_main,
+					    next => "FSPERF_MODE_GRAPH",
 					    data => undef,
 					   },
 		 );
@@ -2516,11 +2543,14 @@ sub run_next_cmd
     my $mode = $ENV{FSPERF_MODE};
 
     if ($mode_table{$mode}->{next}) {
-	my $next = $mode_table{$mode}->{next};
-	my $data = $mode_table{$mode}->{data};
+	$ENV{FSPERF_MODE} = $mode_table{$mode}->{next};
 
-	$ENV{FSPERF_MODE} = $next;
-	run_perf_script($data);
+	if ($mode_table{$mode}->{data}) {
+	    run_perf_script($mode_table{$mode}->{data});
+	} else {
+	    trace_begin();
+	    trace_end();
+	}
     }
 }
 
@@ -2538,6 +2568,7 @@ Options:
  <cmdline>...		 Any command you can specify in a shell.
  -d, --device=DEV        Record events only for DEV.
                          Accepts multiple times (e.g. -d /dev/sda -d /dev/sdb)
+ --no-sched              Don't run sched events
  -h, --help              This help.
 
 EOF
@@ -2727,12 +2758,14 @@ sub run_record
     }
     push(@cmd, "--");
 
-    # Make sched events cmdline
-    push(@cmd, "perf", "record", "-a", "-c1", "-g", "-o", $perf_sched_data);
-    foreach my $event (@sched_events) {
-	push(@cmd, "-e", $event);
+    if (not $opt_no_sched) {
+	# Make sched events cmdline
+	push(@cmd, "perf", "record", "-a", "-c1", "-g", "-o", $perf_sched_data);
+	foreach my $event (@sched_events) {
+	    push(@cmd, "-e", $event);
+	}
+	push(@cmd, "--");
     }
-    push(@cmd, "--");
 
     # Add user cmdline
     push(@cmd, @ARGV);
@@ -2746,6 +2779,7 @@ sub cmd_record
 
     my $ret = GetOptions(
 			 "device=s"	=> \@opt_device,
+			 "no-sched"	=> \$opt_no_sched,
 			 "help"		=> \$help,
 			);
 
@@ -2765,12 +2799,13 @@ Options:
                               Accepts multiple times (e.g. -p 1 -p 2 -p 3)
  -w, --work-id=ID             Output Schedule time for Work-id of ID.
                               Accepts multiple times (e.g. -w 1 -w 2 -w 3)
- -n, --no-error               Don't exit even if sanity check found error.
  -s, --seek-threshold=VAL     Seek threshold. If seek distance is smaller than
                               VAL, this seek is ignored.
  -r, --relative-seek          Calculate seek relative distance. I.e. if next
                               access is before last access, use start of last
                               access. Otherwise, use end of last access.
+ --no-error                   Don't exit even if sanity check found error.
+ --no-sched                   Don't run sched events
  -h, --help                   This help.
 
 EOF
@@ -2785,9 +2820,10 @@ sub cmd_report
     my $ret = GetOptions(
 			 "pid=i"		=> \@opt_pid,
 			 "work-id=i"		=> \@opt_work_id,
-			 "no-error"		=> \$opt_no_error,
 			 "seek-threshold=i"	=> \$opt_seek_threshold,
 			 "relative-seek"	=> \$opt_seek_relative,
+			 "no-error"		=> \$opt_no_error,
+			 "no-sched"		=> \$opt_no_sched,
 			 "help"			=> \$help,
 			);
 
@@ -2797,7 +2833,11 @@ sub cmd_report
     @opt_work_id = map { to_wid($_) } @opt_work_id;
 
     # Pass parameters as environment variables
-    $ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
+    if ($opt_no_sched) {
+	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT2";
+    } else {
+	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
+    }
     $ENV{FSPERF_SCRIPT} = $0;
     $ENV{FSPERF_TARGET_PID} = join(',', @opt_pid);
     $ENV{FSPERF_TARGET_WID} = join(',', @opt_work_id);

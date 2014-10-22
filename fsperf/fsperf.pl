@@ -47,6 +47,8 @@ my $opt_seek_threshold = 0;
 my $opt_seek_relative = 0;
 # Don't run sched events
 my $opt_no_sched = 0;
+# Only re-plot graph
+my $opt_graph_only = 0;
 
 my @opt_target_pid = ();
 my @opt_target_wid = ();
@@ -2915,6 +2917,26 @@ sub print_header
 #    print Dumper \@event, \@attr, \@sample, \@raw_data;
 #}
 
+sub graph_only_main
+{
+    if (not -d $output_dir) {
+	die "Coundn't find $output_dir directory: $!";
+    }
+
+    # Make target kdevs
+    my %devs;
+    foreach my $name (glob("$output_dir/*,*")) {
+	if ($name =~ m!(\d+,\d+)_.*!) {
+	    my $dev = "$1";
+	    my ($major, $minor) = split(/,/, $dev);
+	    my $kdev = kmakedev($major, $minor);
+	    $devs{$kdev} = 1;
+	}
+    }
+
+    $ENV{FSPERF_DEV} = join(",", keys(%devs));
+}
+
 my %mode_table = (
 		  FSPERF_MODE_REPORT	=> {
 					    func => undef,
@@ -2945,6 +2967,13 @@ my %mode_table = (
 					   },
 		  FSPERF_MODE_BLOCK2	=> {
 					    func => \&block_main,
+					    next => "FSPERF_MODE_GRAPH",
+					    data => undef,
+					   },
+
+		  # For $opt_no_sched
+		  FSPERF_MODE_REPORT3	=> {
+					    func => \&graph_only_main,
 					    next => "FSPERF_MODE_GRAPH",
 					    data => undef,
 					   },
@@ -3005,6 +3034,18 @@ sub run_next_cmd
 	    trace_end();
 	}
     }
+}
+
+sub run_cmd
+{
+    my $mode = $ENV{FSPERF_MODE};
+
+    # Call function
+    if ($mode_table{$mode}->{func}) {
+	$mode_table{$mode}->{func}->();
+    }
+
+    run_next_cmd();
 }
 
 ##################################
@@ -3294,6 +3335,7 @@ Options:
                               access. Otherwise, use end of last access.
  --no-error                   Don't exit even if sanity check found error.
  --no-sched                   Don't run sched events
+ --graph-only                 Run re-plot graph only
  -h, --help                   This help.
 
 EOF
@@ -3312,6 +3354,7 @@ sub cmd_report
 			 "relative-seek"	=> \$opt_seek_relative,
 			 "no-error"		=> \$opt_no_error,
 			 "no-sched"		=> \$opt_no_sched,
+			 "graph-only"		=> \$opt_graph_only,
 			 "help"			=> \$help,
 			);
 
@@ -3321,7 +3364,9 @@ sub cmd_report
     @opt_work_id = map { to_wid($_) } @opt_work_id;
 
     # Pass parameters as environment variables
-    if ($opt_no_sched) {
+    if ($opt_graph_only) {
+	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT3";
+    } elsif ($opt_no_sched) {
 	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT2";
     } else {
 	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";
@@ -3333,7 +3378,7 @@ sub cmd_report
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;
 
-    run_next_cmd();
+    run_cmd();
 }
 
 sub cmd_help

@@ -36,6 +36,7 @@ my (%block_s, %sched_s, %switch_state, %wq_state);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_block_data = "perf-block.data";
+my $perf_block_map = "perf-block.map";
 my $output_dir = "fsperf-output";
 
 # Don't exit even if sanity check found error
@@ -50,6 +51,7 @@ my $opt_no_sched = 0;
 my @opt_target_pid = ();
 my @opt_target_wid = ();
 my ($cur_time, $perf_start, $perf_end, $perf_xstart, $perf_xend);
+my %devmap;
 
 ##################################
 #
@@ -910,6 +912,232 @@ sub create_dev_datfile($$)
     return create_datfile($base);
 }
 
+# FLUSH handling
+sub pr_flush_debug(@)
+{
+#    my ($rwbs_flags,
+#	$event_name, $context, $common_cpu, $common_secs,
+#	$common_nsecs, $common_pid, $common_comm,
+#	$dev, $sector, $nr_sector, $rwbs, $comm, $msg) = @_;
+#    my $time_str = tv64_str(to_tv64($common_secs, $common_nsecs));
+#
+#    print "$event_name: $time_str, $rwbs, $sector, $nr_sector: $msg\n";
+}
+
+# FLUSH only request uses sector==0, so we can't match queue and
+# complete. To identify roughly, use unique dummy sector number.
+my $pending_sector = -1;
+my $complete_sector = -1;
+sub get_unique_sector($)
+{
+    if ($_[0] < -1000000000) {
+	$_[0] = -1;
+    } else {
+	$_[0]--;
+    }
+    return $_[0];
+}
+
+sub is_unique_sector($)
+{
+    my $sector = shift;
+    return $sector < 0;
+}
+
+sub unique_pending_sector()
+{
+    return get_unique_sector($pending_sector);
+}
+
+sub unique_complete_sector()
+{
+    return get_unique_sector($complete_sector);
+}
+
+sub get_flush_idx($)
+{
+    my $dev = shift;
+    if (!defined($block_s{$dev}{"flush_idx"})) {
+	$block_s{$dev}{"flush_idx"} = 0;
+    }
+    return $block_s{$dev}{"flush_idx"};
+}
+
+sub flush_pending_idx($)
+{
+    my $dev = shift;
+    return get_flush_idx($dev);
+}
+
+sub flush_running_idx($)
+{
+    my $dev = shift;
+    return get_flush_idx($dev) ? 0 : 1;
+}
+
+sub toggle_flush_idx($)
+{
+    my $dev = shift;
+    $block_s{$dev}{"flush_idx"} = (get_flush_idx($dev) ? 0 : 1);
+}
+
+sub flush_add_pending($$)
+{
+    my $dev = shift;
+    my $sector = shift;
+    my $idx = flush_pending_idx($dev);
+
+    $block_s{$dev}{"flush_pending_$idx"}{$sector} = 1;
+}
+
+sub flush_issue($$)
+{
+    my $time = shift;
+    my $dev = shift;
+
+    my $requeued = $block_s{$dev}{"flush_requeued"};
+    delete($block_s{$dev}{"flush_requeued"});
+
+    # If FLUSH command was requeued, update requests on previous pending idx.
+    my $idx = $requeued ? flush_running_idx($dev) : flush_pending_idx($dev);
+
+    foreach my $s (keys(%{$block_s{$dev}{"flush_pending_$idx"}})) {
+	# If data part was completed, use F2
+	my $part = $block_s{$dev}{"pending_w"}{$s}{"D"} ? "F2D" : "F1D";
+	$block_s{$dev}{"pending_w"}{$s}{$part} = $time;
+    }
+
+    if ($requeued) {
+	# If FLUSH was requeued, state machine is already running by 1st issue.
+    } else {
+	# Switch current pending and running
+	toggle_flush_idx($dev);
+    }
+}
+
+sub flush_complete($$)
+{
+    my $time = shift;
+    my $dev = shift;
+    my $idx = flush_running_idx($dev);
+
+    foreach my $s (keys(%{$block_s{$dev}{"flush_pending_$idx"}})) {
+	# If data part was completed, use F2
+	my $part = $block_s{$dev}{"pending_w"}{$s}{"D"} ? "F2C" : "F1C";
+	$block_s{$dev}{"pending_w"}{$s}{$part} = $time;
+    }
+
+    delete($block_s{$dev}{"flush_pending_$idx"});
+}
+
+# Cancel flush_issue()
+sub flush_requeue($)
+{
+    my $dev = shift;
+
+    # Get previous pending
+    my $idx = flush_running_idx($dev);
+
+    foreach my $s (keys(%{$block_s{$dev}{"flush_pending_$idx"}})) {
+	# If data part was completed, use F2
+	my $part = $block_s{$dev}{"pending_w"}{$s}{"D"} ? "F2D" : "F1D";
+	delete($block_s{$dev}{"pending_w"}{$s}{$part});
+    }
+
+    $block_s{$dev}{"flush_requeued"} = 1;
+}
+
+sub flush_done($$)
+{
+    my $dev = shift;
+    my $sector = shift;
+
+    my %flush_req = %{$block_s{$dev}{"pending_w"}{$sector}};
+    $flush_req{sector} = $sector;
+    push(@{$block_s{$dev}{"flush_done"}}, \%flush_req);
+}
+
+use constant F_SUM_F1 => (1 << 0);
+use constant F_SUM_D  => (1 << 1);
+use constant F_SUM_F2 => (1 << 2);
+
+my %flush_type_map = (
+		      "f"	=> F_SUM_F1,
+		      "f+d"	=> F_SUM_F1 | F_SUM_D,
+		      "d+f"	=> F_SUM_D | F_SUM_F2,
+		      "d+fua"	=> F_SUM_D,
+		      "f+d+f"	=> F_SUM_F1 | F_SUM_D | F_SUM_F2,
+		      "f+d+fua"	=> F_SUM_F1 | F_SUM_D
+		     );
+
+sub flush_summalize()
+{
+
+    foreach my $dev (keys %block_s) {
+	my %flush_sum;
+
+	foreach my $req (@{$block_s{$dev}{"flush_done"}}) {
+	    my $flags = $req->{"flags"};
+	    my $type;
+
+	    if (($flags & (RWBS_FLUSH | RWBS_FUA)) == RWBS_FLUSH) {
+		if ($req->{"nr"} == 0) {
+		    # FLUSH only
+		    $type = "f";
+		} else {
+		    # FLUSH+D
+		    $type = "f+d";
+		}
+	    } elsif (($flags & (RWBS_FLUSH | RWBS_FUA)) == RWBS_FUA) {
+		if ($req->{"F2D"}) {
+		    # D+FLUSH
+		    $type = "d+f";
+		} else {
+		    # D+FUA
+		    $type = "d+fua";
+		}
+	    } else {
+		if ($req->{"F2D"}) {
+		    # FLUSH+D+FLUSH
+		    $type = "f+d+f";
+		} else {
+		    # FLUSH+D+FUA
+		    $type = "f+d+fua";
+		}
+	    }
+
+	    my $sum_type = $flush_type_map{$type};
+	    if ($sum_type & F_SUM_F1) {
+		my $time = $req->{"F1C"} - $req->{"F1D"};
+		num_add($flush_sum{$type}{"f1"}, $time);
+		num_max($flush_sum{$type}{"f1_max"}, $time);
+		num_min($flush_sum{$type}{"f1_min"}, $time);
+	    }
+	    if ($sum_type & F_SUM_D) {
+		my $time = $req->{"DC"} - $req->{"D"};
+		num_add($flush_sum{$type}{"d"}, $time);
+		num_max($flush_sum{$type}{"d_max"}, $time);
+		num_min($flush_sum{$type}{"d_min"}, $time);
+	    }
+	    if ($sum_type & F_SUM_F2) {
+		my $time = $req->{"F2C"} - $req->{"F2D"};
+		num_add($flush_sum{$type}{"f2"}, $time);
+		num_max($flush_sum{$type}{"f2_max"}, $time);
+		num_min($flush_sum{$type}{"f2_min"}, $time);
+	    }
+
+	    num_add($flush_sum{$type}{"nr"}, 1);
+	    # Q2C
+	    my $time = $req->{"C"} - $req->{"Q"};
+	    num_add($flush_sum{$type}{"q2c"}, $time);
+	    num_max($flush_sum{$type}{"q2c_max"}, $time);
+	    num_min($flush_sum{$type}{"q2c_min"}, $time);
+	}
+
+	$block_s{$dev}{"flush_sum"} = \%flush_sum;
+    }
+}
+
 # Output I/O position info
 sub add_bno(@)
 {
@@ -1037,12 +1265,29 @@ sub add_queue_pending(@)
     my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
 
+    if ($rwbs_flags & RWBS_FLUSH) {
+	pr_flush_debug(@_, "queue");
+
+	if ($nr_sector == 0) {
+	    # FLUSH without data, sector number is fake. So, use
+	    # unique number to identify.
+	    $sector = unique_pending_sector();
+	}
+
+	# Remember queued FLUSH request
+	flush_add_pending($dev, $sector);
+    } elsif ($rwbs_flags & RWBS_FUA) {
+	# FUA request without FLUSH
+	pr_flush_debug(@_, "queue");
+    }
+
     # Sanity check of pending I/O in queue
-    sanity_check_pending(@_);
+    sanity_check_pending(@_) if ($nr_sector);
 
     # Save pending I/O
     $block_s{$dev}{"pending_$dir"}{$sector}{"Q"} = $time;
     $block_s{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"flags"} = $rwbs_flags;
 
     # Update queue depth
     update_qdepth($dev, $time, 1);
@@ -1153,8 +1398,27 @@ sub add_issue_pending(@)
     my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
 
-    # Save pending I/O
-    $block_s{$dev}{"pending_$dir"}{$sector}{"D"} = $time;
+    if ($rwbs_flags & RWBS_FLUSH) {
+	pr_flush_debug(@_, "issue flush");
+
+	# FLUSH command was issued, update time of all current pending
+	flush_issue($time, $dev);
+    } else {
+	if ($block_s{$dev}{"pending_$dir"}{$sector}) {
+	    my $flags = $block_s{$dev}{"pending_$dir"}{$sector}{"flags"};
+	    if ($flags & (RWBS_FLUSH | RWBS_FUA)) {
+		pr_flush_debug(@_, "issue data");
+	    }
+	    if ($flags & RWBS_FLUSH) {
+		# Data part issued, this means FLUSH command was done
+		flush_complete($time, $dev);
+	    } elsif ($flags & RWBS_FUA) {
+		# FUA request without FLUSH
+	    }
+	}
+	# Save pending I/O
+	$block_s{$dev}{"pending_$dir"}{$sector}{"D"} = $time;
+    }
 }
 
 # Complete(C) pending I/O
@@ -1168,6 +1432,69 @@ sub add_complete_pending(@)
     my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
     my $time = to_tv64($common_secs, $common_nsecs);
     my $pend_str = "pending_$dir";
+
+    if ($nr_sector == 0) {
+	pr_flush_debug(@_, "done");
+
+	# Request included FLUSH was done
+	if ($sector == 0) {
+	    # FLUSH request without data, get from fake sector by FIFO order
+	    $sector = unique_complete_sector();
+	}
+	if (!defined($block_s{$dev}{$pend_str}{$sector})) {
+	    my $devname = kdevname($dev);
+	    pr_warn("$event_name: Missing queue event: ($devname): ",
+		    make_io_str($time, $dir, $sector, $nr_sector));
+	    return;
+	}
+
+	my $flags = $block_s{$dev}{$pend_str}{$sector}{"flags"};
+	if (is_unique_sector($sector) or
+	    ($flags & RWBS_FUA) and !($rwbs_flags & RWBS_FUA)) {
+	    # FLUSH only request or FLUSH for converted FUA was done
+	    flush_complete($time, $dev);
+	}
+
+	# FLUSH request was done
+	$block_s{$dev}{$pend_str}{$sector}{"C"} = $time;
+
+	# Remember FLUSH requests
+	flush_done($dev, $sector);
+
+	delete($block_s{$dev}{$pend_str}{$sector});
+	update_qdepth($dev, $time, -1);
+	return;
+    } elsif ($block_s{$dev}{$pend_str}{$sector}) {
+	my $flags = $block_s{$dev}{$pend_str}{$sector}{"flags"};
+	# Data part of FLUSH request, or FUA converted to FLUSH
+	if (($flags & RWBS_FLUSH) or
+	    (($flags & RWBS_FUA) and !($rwbs_flags & RWBS_FUA))) {
+	    pr_flush_debug(@_, "data complete");
+
+	    # FUA converted to FLUSH
+	    if (($flags & RWBS_FUA) and !($rwbs_flags & RWBS_FUA)) {
+		# This device doesn't support FUA, add pending FLUSH
+		flush_add_pending($dev, $sector);
+	    }
+
+	    # There is more completion for this request
+	    $block_s{$dev}{$pend_str}{$sector}{"DC"} = $time;
+	    return;
+	} elsif ($rwbs_flags & RWBS_FUA) {
+	    pr_flush_debug(@_, "fua done");
+
+	    # FUA request without FLUSH
+	    $block_s{$dev}{$pend_str}{$sector}{"DC"} = $time;
+	    $block_s{$dev}{$pend_str}{$sector}{"C"} = $time;
+
+	    # Remember FLUSH requests
+	    flush_done($dev, $sector);
+
+	    delete($block_s{$dev}{$pend_str}{$sector});
+	    update_qdepth($dev, $time, -1);
+	    return;
+	}
+    }
 
     if (!defined($block_s{$dev}{$pend_str}{$sector}) ||
 	!defined($block_s{$dev}{$pend_str}{$sector}{"nr"})) {
@@ -1240,6 +1567,24 @@ sub add_complete_pending(@)
 	my $fh_d2c = $block_s{$dev}{$fname_d2c};
 	my $lat_d2c_str = tv64_str($lat_d2c);
 	print $fh_d2c "$time_str $lat_d2c_str\n";
+    }
+}
+
+# Requeue(R) pending I/O
+sub add_requeue_pending(@)
+{
+    my ($rwbs_flags,
+	$event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm,
+	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
+
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
+
+    if ($rwbs_flags & RWBS_FLUSH) {
+	pr_flush_debug(@_, "requeue");
+	flush_requeue($dev);
+    } else {
+	delete($block_s{$dev}{"pending_$dir"}{$sector}{"D"});
     }
 }
 
@@ -1471,6 +1816,52 @@ EOF
 	}
     }
 
+    # Summary FLUSH requests
+    flush_summalize();
+
+    print $log <<"EOF";
+
+                    FLUSH/FUA Latency time
+-----------------------------------------------------------------
+  Dev  Req          NR  Type           Avg          Min          Max    (secs)
+EOF
+    foreach my $dev (keys %block_s) {
+	foreach my $type ("f", "f+d", "d+f", "d+fua", "f+d+f", "f+d+fua") {
+	    next if (not $block_s{$dev}{"flush_sum"}{$type}{"nr"});
+
+	    # Output short summary
+	    my $nr = $block_s{$dev}{"flush_sum"}{$type}{"nr"};
+	    my $sum_type = $flush_type_map{$type};
+	    my @reqs = ("q2c");
+	    if ($sum_type & F_SUM_F1) {
+		push(@reqs, "f1");
+	    }
+	    if ($sum_type & F_SUM_D) {
+		push(@reqs, "d");
+	    }
+	    if ($sum_type & F_SUM_F2) {
+		push(@reqs, "f2");
+	    }
+
+	    foreach my $req (@reqs) {
+		my $total = $block_s{$dev}{"flush_sum"}{$type}{"$req"};
+		my $max = $block_s{$dev}{"flush_sum"}{$type}{"${req}_max"};
+		my $min = $block_s{$dev}{"flush_sum"}{$type}{"${req}_min"};
+		my $avg = $total / $nr;
+
+		if ($req eq "q2c") {
+		    printf $log " %4s  %-8s %6u  %-4s   %s  %s  %s\n",
+			kdevname($dev), uc($type), $nr, uc($req),
+			tv64_str($avg), tv64_str($min), tv64_str($max);
+		} else {
+		    printf $log " %4s  %-8s %6s  %-4s   %s  %s  %s\n",
+			" ", " ", " ", uc($req),
+			tv64_str($avg), tv64_str($min), tv64_str($max);
+		}
+	    }
+	}
+    }
+
     # Output/Summary Seeks/s
     print $log <<"EOF";
 
@@ -1547,6 +1938,9 @@ EOF
 
 #sub block::block_rq_remap
 #{
+#    # remap partion to whole disk: $dev
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $old_dev, $old_sector, $rwbs) = @_;
@@ -1556,6 +1950,9 @@ EOF
 
 #sub block::block_bio_remap
 #{
+#    # remap partion to whole disk: $dev
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $old_dev, $old_sector, $rwbs) = @_;
@@ -1565,6 +1962,9 @@ EOF
 
 #sub block::block_split
 #{
+#    # remap partion to whole disk: $dev
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $new_sector, $rwbs, $comm) = @_;
@@ -1592,6 +1992,9 @@ EOF
 
 #sub block::block_sleeprq
 #{
+#    # remap partion to whole disk: $dev
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
@@ -1601,6 +2004,9 @@ EOF
 
 #sub block::block_getrq
 #{
+#    # remap partion to whole disk: $dev
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
@@ -1610,25 +2016,31 @@ EOF
 
 sub block::block_bio_queue
 {
+    # remap partion to whole disk: $dev
+    $_[7] = get_whole_dev($_[7]);
+
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    my $rwbs_flags = parse_rwbs(@_);
+
     update_cur_time($common_secs, $common_nsecs);
 
-    # Flush request?
-    if ($nr_sector == 0) {
+    # Unknown no data request?
+    if (!($rwbs_flags & RWBS_FLUSH) and $nr_sector == 0) {
 	my $devname = kdevname($dev);
 	my $tv64 = to_tv64($common_secs, $common_nsecs);
 
-	pr_warn("$event_name: Ignore flush request: ($devname): ",
+	pr_warn("$event_name: Ignore no data request: ($devname): ",
 		make_io_str($tv64, $rwbs, $sector, $nr_sector));
 	return;
     }
 
-    my $rwbs_flags = parse_rwbs(@_);
     if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
-	add_bno($rwbs_flags, @_);
+	if ($nr_sector) {
+	    add_bno($rwbs_flags, @_);
+	}
 	add_queue_pending($rwbs_flags, @_);
     } else {
 	my $devname = kdevname($dev);
@@ -1641,6 +2053,9 @@ sub block::block_bio_queue
 
 sub block::block_bio_frontmerge
 {
+    # remap partion $dev to whole disk
+    $_[7] = get_whole_dev($_[7]);
+
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
@@ -1661,6 +2076,9 @@ sub block::block_bio_frontmerge
 
 sub block::block_bio_backmerge
 {
+    # remap partion $dev to whole disk
+    $_[7] = get_whole_dev($_[7]);
+
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
@@ -1681,6 +2099,9 @@ sub block::block_bio_backmerge
 
 #sub block::block_bio_complete
 #{
+#    # remap partion $dev to whole disk
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $error, $rwbs) = @_;
@@ -1690,6 +2111,9 @@ sub block::block_bio_backmerge
 
 #sub block::block_bio_bounce
 #{
+#    # remap partion $dev to whole disk
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
@@ -1699,29 +2123,36 @@ sub block::block_bio_backmerge
 
 sub block::block_rq_issue
 {
+    # remap partion $dev to whole disk
+    $_[7] = get_whole_dev($_[7]);
+
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $bytes, $rwbs, $comm, $cmd) = @_;
 
+    my @normalized_args = @_;
+    splice(@normalized_args, 10, 1); # remove bytes
+    splice(@normalized_args, -1, 1); # remove cmd
+
+    my $rwbs_flags = parse_rwbs(@normalized_args);
+
     update_cur_time($common_secs, $common_nsecs);
 
-    # Flush request?
-    if ($nr_sector == 0) {
+    # Unknown no data request?
+    if (!($rwbs_flags & RWBS_FLUSH) and $nr_sector == 0) {
 	my $devname = kdevname($dev);
 	my $tv64 = to_tv64($common_secs, $common_nsecs);
 
-	pr_warn("$event_name: Ignore flush request: ($devname): ",
+	pr_warn("$event_name: Ignore no data request: ($devname): ",
 		make_io_str($tv64, $rwbs, $sector, $nr_sector));
 	return;
     }
 
-    my @normalized_args = @_;
-    splice(@normalized_args, 10, 1);
-
-    my $rwbs_flags = parse_rwbs(@normalized_args);
     if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
-	add_bno($rwbs_flags, @normalized_args);
-	add_seek($rwbs_flags, @normalized_args);
+	if ($nr_sector) {
+	    add_bno($rwbs_flags, @normalized_args);
+	    add_seek($rwbs_flags, @normalized_args);
+	}
 	add_issue_pending($rwbs_flags, @normalized_args);
     } else {
 	my $devname = kdevname($dev);
@@ -1734,6 +2165,9 @@ sub block::block_rq_issue
 
 #sub block::block_rq_insert
 #{
+#    # remap partion $dev to whole disk
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $bytes, $rwbs, $comm, $cmd) = @_;
@@ -1743,29 +2177,25 @@ sub block::block_rq_issue
 
 sub block::block_rq_complete
 {
+    # remap partion $dev to whole disk
+    $_[7] = get_whole_dev($_[7]);
+
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$dev, $sector, $nr_sector, $errors, $rwbs, $cmd) = @_;
 
-    update_cur_time($common_secs, $common_nsecs);
-
-    # Flush request?
-    if ($nr_sector == 0) {
-	my $devname = kdevname($dev);
-	my $tv64 = to_tv64($common_secs, $common_nsecs);
-
-	pr_warn("$event_name: Ignore flush request: ($devname): ",
-		make_io_str($tv64, $rwbs, $sector, $nr_sector));
-	return;
-    }
-
     my @normalized_args = @_;
-    splice(@normalized_args, 10, 1);
+    splice(@normalized_args, 10, 1); # remove errors
 
     my $rwbs_flags = parse_rwbs(@normalized_args);
+
+    update_cur_time($common_secs, $common_nsecs);
+
     if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
-	add_bno($rwbs_flags, @normalized_args);
-	add_io($rwbs_flags, @normalized_args);
+	if ($nr_sector) {
+	    add_bno($rwbs_flags, @normalized_args);
+	    add_io($rwbs_flags, @normalized_args);
+	}
 	add_complete_pending($rwbs_flags, @normalized_args);
     } else {
 	my $devname = kdevname($dev);
@@ -1776,17 +2206,38 @@ sub block::block_rq_complete
     }
 }
 
-#sub block::block_rq_requeue
-#{
-#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	$common_pid, $common_comm,
-#	$dev, $sector, $nr_sector, $errors, $rwbs, $cmd) = @_;
-#
-#    update_cur_time($common_secs, $common_nsecs);
-#}
+sub block::block_rq_requeue
+{
+    # remap partion $dev to whole disk
+    $_[7] = get_whole_dev($_[7]);
+
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm,
+	$dev, $sector, $nr_sector, $errors, $rwbs, $cmd) = @_;
+
+    my @normalized_args = @_;
+    splice(@normalized_args, 10, 1); # remove errors
+
+    my $rwbs_flags = parse_rwbs(@normalized_args);
+
+    update_cur_time($common_secs, $common_nsecs);
+
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_requeue_pending($rwbs_flags, @normalized_args);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, $nr_sector));
+    }
+}
 
 #sub block::block_rq_abort
 #{
+#    # remap partion $dev to whole disk
+#    $_[7] = get_whole_dev($_[7]);
+#
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $errors, $rwbs, $cmd) = @_;
@@ -2508,6 +2959,8 @@ sub trace_begin
     $opt_no_error = $ENV{FSPERF_NO_ERROR};
     $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
     $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
+
+    read_devmap();
 }
 
 # Called from perf after all events was done
@@ -2597,8 +3050,6 @@ sub get_kdev($)
 # Make map for "partition => whole disk"
 sub make_devmap
 {
-    my %devmap;
-
     # Find whole device from partition
     open(my $lsblk, "lsblk -l -n -o MAJ:MIN,TYPE |")
 	or die "Couldn't run lsblk: $!";
@@ -2621,7 +3072,42 @@ sub make_devmap
 
     close($lsblk);
 
-    return %devmap;
+    # create mapping of partition => whole
+    open(my $fh, "> $perf_block_map")
+	or die "Couldn't create $perf_block_map: $!";
+    foreach my $dev (keys(%devmap)) {
+	print $fh "$dev $devmap{$dev}\n";
+    }
+    close($fh);
+}
+
+sub read_devmap
+{
+    my $fh;
+
+    # read mapping of partition => whole
+    unless (open($fh, "< $perf_block_map")) {
+	pr_warn("Couldn't open $perf_block_map");
+	return;
+    }
+    while (<$fh>) {
+	my ($dev, $whole) = split(/ /);
+	$devmap{$dev} = $whole;
+    }
+    close($fh);
+}
+
+sub get_whole_dev($)
+{
+    my $dev = shift;
+
+    if (!defined($devmap{$dev})) {
+	my $devname = kdevname($dev);
+	pr_warn("Unknown device: $dev");
+	$devmap{$dev} = $dev;
+    }
+
+    return $devmap{$dev};
 }
 
 use constant FILTER_DEV => "dev";
@@ -2657,8 +3143,9 @@ sub make_filter_str($@)
 sub get_device_kdev(@)
 {
     my @devices = @_;
-    my %devmap = make_devmap();
     my @kdevs;
+
+    make_devmap();
 
     my $or_sep = "";
     my $filter;
@@ -2668,8 +3155,9 @@ sub get_device_kdev(@)
 	if (!defined($devmap{$dev})) {
 	    die "Coundn't find whole device for " . kdevname($dev);
 	}
-	my $whole_disk = $devmap{$dev};
+	my $whole_disk = get_whole_dev($dev);
 
+	push(@kdevs, $dev);
 	push(@kdevs, $whole_disk);
     }
 
@@ -2695,7 +3183,7 @@ sub run_record
 			"block:block_rq_issue" => FILTER_DEV,
 #			"block:block_rq_insert" => FILTER_DEV,
 			"block:block_rq_complete" => FILTER_DEV,
-#			"block:block_rq_requeue" => FILTER_DEV,
+			"block:block_rq_requeue" => FILTER_DEV,
 #			"block:block_rq_abort" => FILTER_DEV,
 
 #			"writeback:writeback_start" => FILTER_NAME,

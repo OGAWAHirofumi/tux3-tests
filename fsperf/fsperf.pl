@@ -32,6 +32,14 @@ use bignum;
 use Getopt::Long;
 use Cwd;
 
+# If there are many processes, we open sched_*.dat for each process.
+# So, this can be the cause of EMFILE.
+#
+# To fix it, use "FileCache" module. It makes LRU cache of open FHs,
+# and when re-open expired cache, it opens by append mode.
+no strict "refs";
+use FileCache;
+
 my (%block_s, %sched_s, %switch_state, %wq_state);
 
 my $perf_sched_data = "perf-sched.data";
@@ -214,7 +222,10 @@ sub calc_start_end_time
     $perf_xend = to_sec($perf_end) + 2;
 }
 
-sub create_file($$;$)
+# Remember cache FH to close before fork()
+my %cache_fh;
+
+sub open_file($;$$)
 {
     my $name = shift;
     my $mode = shift;
@@ -230,19 +241,34 @@ sub create_file($$;$)
 	$path = "$output_dir/$name";
     }
 
-    my $fh;
-    open($fh, "> $path") or die "Couldn't create file: $path: $!";
-    chmod($mode, $fh);
+    my $fh = cacheout($path) or die "Couldn't create file: $path: $!";
+    if ($mode) {
+	chmod($mode, $fh);
+    }
+    $cache_fh{$fh} = 1;
 
     return $fh;
 }
 
-sub create_datfile($)
+sub close_file($)
+{
+    my $fh = shift;
+    delete($cache_fh{$fh});
+    cacheout_close($fh);
+}
+
+sub close_file_all()
+{
+    foreach my $fh (keys(%cache_fh)) {
+	close_file($fh);
+    }
+}
+
+sub open_datfile($)
 {
     my $base = shift;
-
     my $name = sprintf("%s.dat", $base);
-    return create_file($name, 0644);
+    return open_file($name);
 }
 
 ##################################
@@ -381,7 +407,7 @@ sub output_plot_color($)
 	return;
     }
 
-    my $fh = create_file($fname, 0644);
+    my $fh = open_file($fname);
 
     print $fh <<"EOF";
 if ((GPVAL_VERSION < 4.5) || \\
@@ -424,7 +450,7 @@ set linetype 32 linecolor rgb "dark-gray"
 set linetype 33 linecolor rgb "skyblue"
 EOF
 
-    close($fh);
+    close_file($fh);
 }
 
 sub output_plot_pre($$$$@)
@@ -483,7 +509,7 @@ sub output_plot_summary($$)
     my $devname = kdevname($dev);
     my $fname = sprintf("%s_summary.gp", $devname);
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     my @plot_gp = (
 		   fname_plot_bno($dev),
@@ -518,7 +544,10 @@ set lmargin 15
 set multiplot layout ${nr_plots},1 columnsfirst scale 1.0,0.9 offset 0.0,0.0
 
 EOF
-    close($fh);
+    close_file($fh);
+
+    # Close all cached FH
+    close_file_all();
 
     my $oldpwd = getcwd();
     chdir($output_dir);
@@ -660,7 +689,7 @@ sub output_plot_bno($)
     my $dev = shift;
     my $fname = fname_plot_bno($dev);
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     output_plot_pre($fh, "I/O Position",
 		    "Time (secs)", "Disk offset (byte)",
@@ -691,7 +720,7 @@ sub output_plot_bno($)
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
 sub fname_plot_mbps($)
@@ -706,7 +735,7 @@ sub output_plot_mbps($)
     my $fname = fname_plot_mbps($dev);
     my $datafile = sprintf("%s_blkps_c.dat", kdevname($dev));
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     output_plot_pre($fh, "Throughput",
 		    "Time (secs)", "MB/s",
@@ -720,7 +749,7 @@ EOF
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
 sub fname_plot_iops($)
@@ -735,7 +764,7 @@ sub output_plot_iops($)
     my $fname = fname_plot_iops($dev);
     my $datafile = sprintf("%s_iops_c.dat", kdevname($dev));
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     output_plot_pre($fh, "IO/s",
 		    "Time (secs)", "IO/s",
@@ -747,7 +776,7 @@ EOF
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
 sub fname_plot_qdepth($)
@@ -762,7 +791,7 @@ sub output_plot_qdepth($)
     my $fname = fname_plot_qdepth($dev);
     my $datafile = sprintf("%s_qdepth_c.dat", kdevname($dev));
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     output_plot_pre($fh, "Queue Depth",
 		    "Time (secs)", "Queue Depth (Number of BIOs)",
@@ -774,7 +803,7 @@ EOF
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
 sub fname_plot_lat_x2c($$$)
@@ -797,7 +826,7 @@ sub output_plot_lat_x2c($$$)
     my $datafile = sprintf("%s_lat_%s2c_%s.dat", kdevname($dev),
 			   lc($shortname), $dir);
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     my $title = sprintf("%s to Complete Latency time - (%s)",
 			$EVENT_LONGNAME{$event_name} , $DIR_LONGNAME{$dir});
@@ -813,7 +842,7 @@ EOF
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
 sub fname_plot_lat_q2c($$)
@@ -858,7 +887,7 @@ sub output_plot_seek_nr($$)
     my $fname = fname_plot_seek_nr($dev, $dir);
     my $datafile = sprintf("%s_seek_nr_%s.dat", kdevname($dev), $dir);
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     output_plot_pre($fh, "Number of Seeks - ($DIR_LONGNAME{$dir})",
 		    "Time (secs)", "Number of Seeks",
@@ -870,7 +899,7 @@ EOF
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
 sub fname_plot_seek_step($$)
@@ -887,7 +916,7 @@ sub output_plot_seek_step($$)
     my $fname = fname_plot_seek_step($dev, $dir);
     my $datafile = sprintf("%s_seek_step_%s.dat", kdevname($dev), $dir);
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     output_plot_pre($fh, "Seek Steps - ($DIR_LONGNAME{$dir})",
 		    "Time (secs)", "Disk offset (byte)",
@@ -902,16 +931,15 @@ EOF
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
-sub create_dev_datfile($$)
+sub open_dev_datfile($$)
 {
     my $dev = shift;
     my $postfix = shift;
-
     my $base = sprintf("%s_%s", kdevname($dev), $postfix);
-    return create_datfile($base);
+    return open_datfile($base);
 }
 
 # FLUSH handling
@@ -1151,12 +1179,9 @@ sub add_bno(@)
     my $fname = sprintf("bno_%s_%s", lc($EVENT_LONGNAME{$event_name}), $rwbs_s);
 
     # Create file if need
-    if (!defined($block_s{$dev}{$fname})) {
-	$block_s{$dev}{$fname} = create_dev_datfile($dev, $fname);
-    }
+    my $fh = open_dev_datfile($dev, $fname);
 
     # Output I/O position per read or write
-    my $fh = $block_s{$dev}{$fname};
     print $fh time_str($common_secs, $common_nsecs), " $sector ",
 	$sector + $nr_sector, "\n";
 }
@@ -1195,11 +1220,8 @@ sub update_qdepth($$$)
 
     my $fname = "qdepth_c";
     # Create file if need
-    if (!defined($block_s{$dev}{$fname})) {
-	$block_s{$dev}{$fname} = create_dev_datfile($dev, $fname);
-    }
+    my $fh = open_dev_datfile($dev, $fname);
 
-    my $fh = $block_s{$dev}{$fname};
     my $time_str = tv64_str($time);
     print $fh  "$time_str " . $block_s{$dev}{"qdepth"} . "\n";
 }
@@ -1551,20 +1573,14 @@ sub add_complete_pending(@)
 	my $fname_d2c = sprintf("lat_d2c_%s", $d);
 
 	# Create file if need
-	if (!defined($block_s{$dev}{$fname_q2c})) {
-	    $block_s{$dev}{$fname_q2c} = create_dev_datfile($dev, $fname_q2c);
-	}
-	if (!defined($block_s{$dev}{$fname_d2c})) {
-	    $block_s{$dev}{$fname_d2c} = create_dev_datfile($dev, $fname_d2c);
-	}
+	my $fh_q2c = open_dev_datfile($dev, $fname_q2c);
+	my $fh_d2c = open_dev_datfile($dev, $fname_d2c);
 
 	my $time_str = tv64_str($time);
 	# Output Q2C latency time
-	my $fh_q2c = $block_s{$dev}{$fname_q2c};
 	my $lat_q2c_str = tv64_str($lat_q2c);
 	print $fh_q2c "$time_str $lat_q2c_str\n";
 	# Output D2C latency time
-	my $fh_d2c = $block_s{$dev}{$fname_d2c};
 	my $lat_d2c_str = tv64_str($lat_d2c);
 	print $fh_d2c "$time_str $lat_d2c_str\n";
     }
@@ -1648,11 +1664,9 @@ sub add_seek(@)
 	$distance = add_seek_distance($d, $dev, $time,
 				      $sector, $sector + $nr_sector);
 	# Create file if need
-	if (!defined($block_s{$dev}{$fname})) {
-	    $block_s{$dev}{$fname} = create_dev_datfile($dev, $fname);
-	}
+	my $fh = open_dev_datfile($dev, $fname);
+
 	# Output seek step
-	my $fh = $block_s{$dev}{$fname};
 	my $end = $sector + $nr_sector;
 #	print $fh "#$time $sector $end\n";
 	if ($distance) {
@@ -1670,7 +1684,7 @@ sub block_main
     my @devs = sort { $a <=> $b } keys(%block_s);
     my %result;
 
-    my $log = create_file("fsperf-block.log", 0644, 1);
+    my $log = open_file("fsperf-block.log", 0644, 1);
 
     calc_start_end_time();
 
@@ -1679,8 +1693,8 @@ sub block_main
 	my %total_blk = ("r" => 0, "w" => 0);
 	my %total_io = ("r" => 0, "w" => 0);
 
-	my $fh_blk = create_dev_datfile($dev, "blkps_c");
-	my $fh_io = create_dev_datfile($dev, "iops_c");
+	my $fh_blk = open_dev_datfile($dev, "blkps_c");
+	my $fh_io = open_dev_datfile($dev, "iops_c");
 	for my $t (to_sec($perf_start)..to_sec($perf_end)) {
 	    my $blkps_c = 0;
 	    my $iops_c = 0;
@@ -1701,8 +1715,8 @@ sub block_main
 	    print $fh_blk "$t.5 $blkps_c\n";
 	    print $fh_io "$t.5 $iops_c\n";
 	}
-	close($fh_blk);
-	close($fh_io);
+	close_file($fh_blk);
+	close_file($fh_io);
 
 	# Remember for short summary
 	foreach my $dir ("r", "w") {
@@ -1879,7 +1893,7 @@ EOF
 	    my $total_nr = 0;
 	    my $total_distance = 0;
 
-	    my $fh = create_dev_datfile($dev, $fname_nr);
+	    my $fh = open_dev_datfile($dev, $fname_nr);
 	    for my $t (to_sec($perf_start)..to_sec($perf_end)) {
 		my $nr = $block_s{$dev}{$fname_nr}[$t] || 0;
 		my $distance = $block_s{$dev}{$fname_distance}[$t] || 0;
@@ -1888,7 +1902,7 @@ EOF
 		$total_distance += $distance;
 		print $fh "$t.5 ", $nr, "\n";
 	    }
-	    close($fh);
+	    close_file($fh);
 
 	    # Output short summary
 	    my $avg_nr = $total_nr / to_sec_nsec($elapse);
@@ -1903,7 +1917,7 @@ EOF
 	    output_plot_seek_step($dev, $dir);
 	}
     }
-    close($log);
+    close_file($log);
 
     # Create summary plot
 #    foreach my $dev (@devs) {
@@ -2279,7 +2293,7 @@ sub output_plot_sched($$)
     my $datafile_time = "sched_${id}_time.dat";
     my $datafile_stat = "sched_${id}_stat.dat";
 
-    my $fh = create_file($fname, 0755);
+    my $fh = open_file($fname, 0755);
 
     my $ylow = -0.4;
     my $ylen = 0.025;
@@ -2342,16 +2356,15 @@ sub output_plot_sched($$)
 
     output_plot_post($fh);
 
-    close($fh);
+    close_file($fh);
 }
 
-sub create_id_datfile($$)
+sub open_id_datfile($$)
 {
     my $id = shift;
     my $postfix = shift;
-
     my $base = sprintf("sched_%s_%s", $id, $postfix);
-    return create_datfile($base);
+    return open_datfile($base);
 }
 
 sub is_interesting_pid($)
@@ -2372,11 +2385,8 @@ sub sched_stat_process
     my $time = shift;
     my $elapse = shift;
 
-    if (!defined($sched_s{$id}{fh})) {
-	$sched_s{$id}{fh} = create_id_datfile($id, "time");
-    }
+    my $fh = open_id_datfile($id, "time");
 
-    my $fh = $sched_s{$id}{fh};
     my $start = $time - $elapse;
     my $start_str = tv64_str($start);
     my $end = $time;
@@ -2685,7 +2695,7 @@ sub sched_main
     }
 
     # Output Scheduler stat
-    my $log = create_file("fsperf-sched.log", 0644, 1);
+    my $log = open_file("fsperf-sched.log", 0644, 1);
 
     print $log <<"EOF";
                       Schedule Time
@@ -2741,7 +2751,7 @@ EOF
 	    tv64_str($sleep_time), $elapse ? ($sleep_time * 100) / $elapse : 0,
 	    tv64_str($block_time), $elapse ? ($block_time * 100) / $elapse : 0;
 
-	my $fh = create_id_datfile($id, "stat");
+	my $fh = open_id_datfile($id, "stat");
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
 	    foreach my $type ("R", "W", "S", "D") {
@@ -2750,13 +2760,13 @@ EOF
 	    }
 	    print $fh "\n";
 	}
-	close($fh);
+	close_file($fh);
 
 	# Create sched plot
 	output_plot_sched($id, $comm);
     }
 
-    close($log);
+    close_file($log);
 
     # Create summary plot
 #    foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {

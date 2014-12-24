@@ -1072,72 +1072,70 @@ my %flush_type_map = (
 		      "f+d+fua"	=> F_SUM_F1 | F_SUM_D
 		     );
 
-sub flush_summalize()
+sub flush_summalize($)
 {
+    my $dev = shift;
+    my %flush_sum;
 
-    foreach my $dev (keys %block_s) {
-	my %flush_sum;
+    foreach my $req (@{$block_s{$dev}{"flush_done"}}) {
+	my $flags = $req->{"flags"};
+	my $type;
 
-	foreach my $req (@{$block_s{$dev}{"flush_done"}}) {
-	    my $flags = $req->{"flags"};
-	    my $type;
-
-	    if (($flags & (RWBS_FLUSH | RWBS_FUA)) == RWBS_FLUSH) {
-		if ($req->{"nr"} == 0) {
-		    # FLUSH only
-		    $type = "f";
-		} else {
-		    # FLUSH+D
-		    $type = "f+d";
-		}
-	    } elsif (($flags & (RWBS_FLUSH | RWBS_FUA)) == RWBS_FUA) {
-		if ($req->{"F2D"}) {
-		    # D+FLUSH
-		    $type = "d+f";
-		} else {
-		    # D+FUA
-		    $type = "d+fua";
-		}
+	if (($flags & (RWBS_FLUSH | RWBS_FUA)) == RWBS_FLUSH) {
+	    if ($req->{"nr"} == 0) {
+		# FLUSH only
+		$type = "f";
 	    } else {
-		if ($req->{"F2D"}) {
-		    # FLUSH+D+FLUSH
-		    $type = "f+d+f";
-		} else {
-		    # FLUSH+D+FUA
-		    $type = "f+d+fua";
-		}
+		# FLUSH+D
+		$type = "f+d";
 	    }
-
-	    my $sum_type = $flush_type_map{$type};
-	    if ($sum_type & F_SUM_F1) {
-		my $time = $req->{"F1C"} - $req->{"F1D"};
-		num_add($flush_sum{$type}{"f1"}, $time);
-		num_max($flush_sum{$type}{"f1_max"}, $time);
-		num_min($flush_sum{$type}{"f1_min"}, $time);
+	} elsif (($flags & (RWBS_FLUSH | RWBS_FUA)) == RWBS_FUA) {
+	    if ($req->{"F2D"}) {
+		# D+FLUSH
+		$type = "d+f";
+	    } else {
+		# D+FUA
+		$type = "d+fua";
 	    }
-	    if ($sum_type & F_SUM_D) {
-		my $time = $req->{"DC"} - $req->{"D"};
-		num_add($flush_sum{$type}{"d"}, $time);
-		num_max($flush_sum{$type}{"d_max"}, $time);
-		num_min($flush_sum{$type}{"d_min"}, $time);
+	} else {
+	    if ($req->{"F2D"}) {
+		# FLUSH+D+FLUSH
+		$type = "f+d+f";
+	    } else {
+		# FLUSH+D+FUA
+		$type = "f+d+fua";
 	    }
-	    if ($sum_type & F_SUM_F2) {
-		my $time = $req->{"F2C"} - $req->{"F2D"};
-		num_add($flush_sum{$type}{"f2"}, $time);
-		num_max($flush_sum{$type}{"f2_max"}, $time);
-		num_min($flush_sum{$type}{"f2_min"}, $time);
-	    }
-
-	    num_add($flush_sum{$type}{"nr"}, 1);
-	    # Q2C
-	    my $time = $req->{"C"} - $req->{"Q"};
-	    num_add($flush_sum{$type}{"q2c"}, $time);
-	    num_max($flush_sum{$type}{"q2c_max"}, $time);
-	    num_min($flush_sum{$type}{"q2c_min"}, $time);
 	}
 
-	$block_s{$dev}{"flush_sum"} = \%flush_sum;
+	my $sum_type = $flush_type_map{$type};
+	if ($sum_type & F_SUM_F1) {
+	    my $time = $req->{"F1C"} - $req->{"F1D"};
+	    num_add($flush_sum{$type}{"f1"}, $time);
+	    num_max($flush_sum{$type}{"f1_max"}, $time);
+	    num_min($flush_sum{$type}{"f1_min"}, $time);
+	}
+	if ($sum_type & F_SUM_D) {
+	    my $time = $req->{"DC"} - $req->{"D"};
+	    num_add($flush_sum{$type}{"d"}, $time);
+	    num_max($flush_sum{$type}{"d_max"}, $time);
+	    num_min($flush_sum{$type}{"d_min"}, $time);
+	}
+	if ($sum_type & F_SUM_F2) {
+	    my $time = $req->{"F2C"} - $req->{"F2D"};
+	    num_add($flush_sum{$type}{"f2"}, $time);
+	    num_max($flush_sum{$type}{"f2_max"}, $time);
+	    num_min($flush_sum{$type}{"f2_min"}, $time);
+	}
+
+	num_add($flush_sum{$type}{"nr"}, 1);
+	# Q2C
+	my $time = $req->{"C"} - $req->{"Q"};
+	num_add($flush_sum{$type}{"q2c"}, $time);
+	num_max($flush_sum{$type}{"q2c_max"}, $time);
+	num_min($flush_sum{$type}{"q2c_min"}, $time);
     }
+
+    $block_s{$dev}{"flush_sum"} = \%flush_sum;
 }
 
 # Output I/O position info
@@ -1669,6 +1667,7 @@ sub add_seek(@)
 
 sub block_main
 {
+    my @devs = sort { $a <=> $b } keys(%block_s);
     my %result;
 
     my $log = create_file("fsperf-block.log", 0644, 1);
@@ -1676,7 +1675,7 @@ sub block_main
     calc_start_end_time();
 
     # Output MB/s and IO/s
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	my %total_blk = ("r" => 0, "w" => 0);
 	my %total_io = ("r" => 0, "w" => 0);
 
@@ -1727,7 +1726,7 @@ sub block_main
 EOF
     my $elapse = $perf_end - $perf_start;
 
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	printf $log " %4s    %15s    %15s    %15s\n",
 	    kdevname($dev), tv64_str($perf_start), tv64_str($perf_end),
 	    tv64_str($elapse);
@@ -1740,7 +1739,7 @@ EOF
 -----------------------------------------------------------------
   Dev  Direction     MB/s     Total(MB)         IO/s     Total(IO)
 EOF
-    foreach my $dev (keys %result) {
+    foreach my $dev (@devs) {
 	foreach my $dir ("r", "w", "c") {
 	    my $total_blk = $result{$dev}{"total_blk_$dir"};
 	    my $total_io = $result{$dev}{"total_io_$dir"};
@@ -1760,7 +1759,7 @@ EOF
 -----------------------------------------------------------------
   Dev       Avg       Min       Max    (1 == 512 bytes)
 EOF
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	my $req_blocks = $block_s{$dev}{"req_blocks"} || 0;
 	my $req_nr = $block_s{$dev}{"req_nr"} || 0;
 	my $req_max = $block_s{$dev}{"req_max"} || 0;
@@ -1779,7 +1778,7 @@ EOF
 -----------------------------------------------------------------
   Dev      Max
 EOF
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	# Output short summary
 	my $max = $block_s{$dev}{"qdepth_max"} || 0;
 
@@ -1797,7 +1796,7 @@ EOF
 -----------------------------------------------------------------
   Dev   Type  Direction          Avg          Min          Max    (secs)
 EOF
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	foreach my $dir ("r", "w", "c") {
 	    foreach my $type ("q2c", "d2c") {
 		# Output short summary
@@ -1819,7 +1818,9 @@ EOF
     }
 
     # Summary FLUSH requests
-    flush_summalize();
+    for my $dev (@devs) {
+	flush_summalize($dev);
+    }
 
     print $log <<"EOF";
 
@@ -1827,7 +1828,7 @@ EOF
 -----------------------------------------------------------------
   Dev  Req          NR  Type           Avg          Min          Max    (secs)
 EOF
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	foreach my $type ("f", "f+d", "d+f", "d+fua", "f+d+f", "f+d+fua") {
 	    next if (not $block_s{$dev}{"flush_sum"}{$type}{"nr"});
 
@@ -1871,7 +1872,7 @@ EOF
 -----------------------------------------------------------------
   Dev   Direction    Seeks/s  Total(Seeks)  Avg Distance(MB) Total Distance(MB)
 EOF
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	foreach my $dir ("r", "w", "c") {
 	    my $fname_nr = "seek_nr_$dir";
 	    my $fname_distance = "seek_distance_$dir";
@@ -1905,12 +1906,12 @@ EOF
     close($log);
 
     # Create summary plot
-#    foreach my $dev (keys %block_s) {
+#    foreach my $dev (@devs) {
 #	output_plot_summary($dev, 0);
 #    }
 
     # Sanity check for pending I/O
-    foreach my $dev (keys %block_s) {
+    foreach my $dev (@devs) {
 	my $devname = kdevname($dev);
 
 	foreach my $dir ("r", "w") {

@@ -475,14 +475,17 @@ sub output_plot_pre($$$$@)
 unset format
 load "${fname_color}"
 
-set title '${title}'
-set xrange [${perf_xstart}:${perf_xend}]
-set xlabel '${xlabel}'
-set ylabel '${ylabel}'
-set grid
 EOF
+    print $fh "set title '${title}'\n" if ($title);
+    print $fh "set xrange [${perf_xstart}:${perf_xend}]\n";
+    print $fh "set xlabel '${xlabel}'\n" if ($xlabel);
+    print $fh "set ylabel '${ylabel}'\n" if ($ylabel);
+    print $fh "set grid\n";
+
     foreach my $conf (@configs) {
-	print $fh "$conf\n";
+	if (defined($conf)) {
+	    print $fh "$conf\n";
+	}
     }
 
     print $fh <<"EOF";
@@ -538,7 +541,7 @@ sub output_plot_summary($$)
     print $fh <<"EOF";
 #!/usr/bin/gnuplot
 
-set term png truecolor size ${width}, ${height} fontscale ${fontscale}
+set term png truecolor size ${width},${height} fontscale ${fontscale}
 set output '${devname}_summary.png'
 set lmargin 15
 set multiplot layout ${nr_plots},1 columnsfirst scale 1.0,0.9 offset 0.0,0.0
@@ -2279,84 +2282,161 @@ use constant TASK_WAKEKILL		=> 128;
 use constant TASK_WAKING		=> 256;
 use constant TASK_PARKED		=> 512;
 
+sub fname_plot_sched_summary()
+{
+    return "sched_summary.gp";
+}
+
+sub output_plot_sched_summary_pre($)
+{
+    my $nr_plots = shift;
+    my $fname_summary = fname_plot_sched_summary();
+    my $fh = open_file($fname_summary, 0755);
+
+    my $height = 20 * $nr_plots;
+    my $width = 800;
+    my $fontscale = 0.8;
+
+    print $fh <<"EOF"
+#!/usr/bin/gnuplot
+
+set term png truecolor size ${width},${height} fontscale ${fontscale}
+set output 'sched_summary.png'
+set tmargin 0
+set bmargin 0
+set multiplot layout ${nr_plots},1 columnsfirst scale 1.0,1.0 offset 0.0,0.0
+unset xtics
+
+EOF
+}
+
+sub output_plot_sched_summary()
+{
+    # Close all cached FH
+    close_file_all();
+
+    my $oldpwd = getcwd();
+    chdir($output_dir);
+
+    # Run summary.gp
+    my $fname = fname_plot_sched_summary();
+    my $cmd = "./$fname > /dev/null 2>&1";
+    safe_system($cmd);
+
+    chdir($oldpwd);
+
+    # Move .png to current dir
+    $cmd = "mv $output_dir/*.png .";
+    safe_system($cmd);
+}
+
 sub fname_plot_sched($)
 {
     my $id = shift;
     return "sched_$id.gp";
 }
 
+# Output sched_*-*.gp and sched_summary.gp
 sub output_plot_sched($$)
 {
     my $id = shift;
     my $comm = shift;
     my $fname = fname_plot_sched($id);
+    my $fname_summary = fname_plot_sched_summary();
     my $datafile_time = "sched_${id}_time.dat";
     my $datafile_stat = "sched_${id}_stat.dat";
 
-    my $fh = open_file($fname, 0755);
+    foreach my $n (0 .. 1) {
+	my $ylow = -0.4;
+	my $ylen = 0.025;
+	my ($fh, $title, $xlabel, $ylabel, $ymin, $ymax, $custom);
 
-    my $ylow = -0.4;
-    my $ylen = 0.025;
-    my $ymin = $ylow - 0.1;
-    my $ymax = 1.1;
-    my $type = is_wid($id) ? "Workqueue" : "Task";
+	if ($n == 0) {
+	    my $type = is_wid($id) ? "Workqueue" : "Task";
+	    # sched_*-*.gp
+	    $fh = open_file($fname, 0755);
+	    $title = "$type $id ($comm) Schedule";
+	    $xlabel = "Time (secs)";
+	    $ylabel = "Schedule Time (secs)";
+	    $ymin = $ylow - 0.1;
+	    $ymax = 1.1;
+	} else {
+	    # sched_summary.gp
+	    $fh = open_file($fname_summary, 0755);
+	    $title = undef;
+	    $ylabel = undef;
+	    $ymin = "*";
+	    $ymax = "*";
+	    $custom = "set xlabel \"$id ($comm)\" offset 0,1.5";
+	}
 
-    output_plot_pre($fh, "$type $id ($comm) Schedule",
-		    "Time (secs)", "Schedule Time (secs)",
-		    "set yrange [$ymin:$ymax]",
-		    "set ytics 0,0.1,1",
-		    "set style fill transparent solid 0.75 noborder",
-		    "set datafile missing '$plot_missing_char'",
-		    "",
-		    "ylow = $ylow",
-		    "ylen = $ylen");
+	output_plot_pre($fh, $title, $xlabel, $ylabel,
+			"set yrange [$ymin:$ymax]",
+			"set ytics 0,0.1,1",
+			"set style fill transparent solid 0.75 noborder",
+			"set datafile missing '$plot_missing_char'",
+			"",
+			"ylow = $ylow",
+			"ylen = $ylen",
+			$custom);
 
-    # Line graph
-    my @info_stat = (
-		     { col => 2, name => "Running",	color => $R_COLOR },
-		     { col => 3, name => "CPU wait",	color => $W_COLOR },
-		     { col => 4, name => "Sleep",	color => $S_COLOR },
-		     { col => 5, name => "Block",	color => $D_COLOR },
-		    );
-    my $need_comma = 0;
-    foreach my $i (@info_stat) {
-	my $col = $i->{col};
-	my $name = $i->{name};
-	my $color = $i->{color};
+	my $need_comma = 0;
+	if ($n == 0) {
+	    # Line graph
+	    my @info_stat =
+		({ col => 2, name => "Running",	color => $R_COLOR },
+		 { col => 3, name => "CPU wait",	color => $W_COLOR },
+		 { col => 4, name => "Sleep",	color => $S_COLOR },
+		 { col => 5, name => "Block",	color => $D_COLOR },);
+	    foreach my $i (@info_stat) {
+		my $col = $i->{col};
+		my $name = $i->{name};
+		my $color = $i->{color};
 
-	print $fh ", \\\n" if ($need_comma);
-	print $fh "'$datafile_stat' using 1:${col} title \"${name}\" with lines linetype ${color}";
+		print $fh ", \\\n" if ($need_comma);
+		print $fh "'$datafile_stat' using 1:${col} title \"${name}\" with lines linetype ${color}";
 
-	$need_comma = 1;
+		$need_comma = 1;
+	    }
+	}
+
+	# Bars
+	my $base = ($n == 0) ? 7 : 0;
+	my @info_time =
+	    ({ col => 2, ypos => $base + 3, color => $R_COLOR },
+	     { col => 3, ypos => $base + 2, color => $W_COLOR },
+	     { col => 4, ypos => $base + 1, color => $S_COLOR },
+	     { col => 5, ypos => $base + 0, color => $D_COLOR },);
+	foreach my $i (@info_time) {
+	    my $col = $i->{col};
+	    my $ypos_l = $i->{ypos};
+	    my $ypos_h = $i->{ypos} + 1;
+	    my $color = $i->{color};
+
+	    # For bar each schedule type
+	    if ($need_comma) {
+		print $fh ", \\\n";
+	    }
+	    print $fh
+		"'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * ${ypos_l}):(ylow + ylen * ${ypos_h}) notitle with boxxyerrorbars linetype ${color}";
+	    if ($n == 0) {
+		# For bar of combined schedule type
+		print $fh ", \\\n";
+		print $fh
+		    "'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * 0):(ylow + ylen * 5) notitle with boxxyerrorbars linetype ${color}";
+	    }
+
+	    $need_comma = 1;
+	}
+	print $fh "\n";
+
+	if ($n == 0) {
+	    output_plot_post($fh);
+	    close_file($fh);
+	} else {
+	    print $fh "\n";
+	}
     }
-
-    # Bars
-    my @info_time = (
-		     { col => 2, ypos => 10, color => $R_COLOR },
-		     { col => 3, ypos =>  9, color => $W_COLOR },
-		     { col => 4, ypos =>  8, color => $S_COLOR },
-		     { col => 5, ypos =>  7, color => $D_COLOR },
-		    );
-    foreach my $i (@info_time) {
-	my $col = $i->{col};
-	my $ypos_l = $i->{ypos};
-	my $ypos_h = $i->{ypos} + 1;
-	my $color = $i->{color};
-
-	# For bar each schedule type
-	print $fh ", \\\n";
-	print $fh
-	    "'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * ${ypos_l}):(ylow + ylen * ${ypos_h}) notitle with boxxyerrorbars linetype ${color}";
-	# For bar of combined schedule type
-	print $fh ", \\\n";
-	print $fh
-	    "'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * 0):(ylow + ylen * 5) notitle with boxxyerrorbars linetype ${color}";
-    }
-    print $fh "\n";
-
-    output_plot_post($fh);
-
-    close_file($fh);
 }
 
 sub open_id_datfile($$)
@@ -2694,13 +2774,18 @@ sub sched_main
 	sched_stat($type, $pid, $comm, $perf_end, $elapse);
     }
 
+    my @ids = sort { id_for_cmp($a) <=> id_for_cmp($b) } keys(%sched_s);
+
+    # Prepare for sched_summary.gp
+    output_plot_sched_summary_pre(scalar(@ids));
+
     # Output Scheduler stat
     my $log = open_file("fsperf-sched.log", 0644, 1);
 
     print $log <<"EOF";
                       Schedule Time
 EOF
-    foreach my $id (sort { id_for_cmp($a) <=> id_for_cmp($b) } keys %sched_s) {
+    foreach my $id (@ids) {
 	my $comm = $sched_s{$id}{comm};
 	my $start_time = $sched_s{$id}{start} || 0;
 	my $end_time = $sched_s{$id}{end} || 0;
@@ -2767,6 +2852,9 @@ EOF
     }
 
     close_file($log);
+
+    # Create sched processes plot
+    output_plot_sched_summary();
 
     # Create summary plot
 #    foreach my $dev (split(/,/, $ENV{FSPERF_DEV})) {

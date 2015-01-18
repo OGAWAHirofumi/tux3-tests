@@ -55,6 +55,8 @@ my $opt_seek_threshold = 0;
 my $opt_seek_relative = 0;
 # Don't run sched events
 my $opt_no_sched = 0;
+# --call-graph option for sched events
+my $opt_call_graph = undef;
 # Only re-plot graph
 my $opt_graph_only = 0;
 
@@ -3162,6 +3164,7 @@ Options:
  -d, --device=DEV        Record events only for DEV.
                          Accepts multiple times (e.g. -d /dev/sda -d /dev/sdb)
  --no-sched              Don't run sched events
+ -g, --call-graph=MODE   pass --call-graph option to sched events
  -h, --help              This help.
 
 EOF
@@ -3388,7 +3391,14 @@ sub run_record
 
     if (not $opt_no_sched) {
 	# Make sched events cmdline
-	push(@cmd, "perf", "record", "-a", "-c1", "-g", "-o", $perf_sched_data);
+	push(@cmd, "perf", "record", "-a", "-c1", "-o", $perf_sched_data);
+	if (defined($opt_call_graph)) {
+	    if (length($opt_call_graph) == 0) {
+		push(@cmd, "-g");
+	    } else {
+		push(@cmd, "--call-graph", "$opt_call_graph");
+	    }
+	}
 	foreach my $event (@sched_events) {
 	    push(@cmd, "-e", $event);
 	}
@@ -3406,9 +3416,10 @@ sub cmd_record
     my (@opt_device, $help);
 
     my $ret = GetOptions(
-			 "device=s"	=> \@opt_device,
-			 "no-sched"	=> \$opt_no_sched,
-			 "help"		=> \$help,
+			 "device=s"		=> \@opt_device,
+			 "no-sched"		=> \$opt_no_sched,
+			 "g|call-graph:s"	=> \$opt_call_graph,
+			 "help"			=> \$help,
 			);
 
     record_help() if ($help || !$ret);

@@ -1334,12 +1334,14 @@ sub update_pending($$$$$)
 
     my $q_time = $block_s{$dev}{"pending_$dir"}{$old_sector}{"Q"};
     my $d_time = $block_s{$dev}{"pending_$dir"}{$old_sector}{"D"};
+    my $flags = $block_s{$dev}{"pending_$dir"}{$old_sector}{"flags"};
     delete($block_s{$dev}{"pending_$dir"}{$old_sector});
 
     # Update pending I/O
     $block_s{$dev}{"pending_$dir"}{$sector}{"Q"} = $q_time;
     $block_s{$dev}{"pending_$dir"}{$sector}{"D"} = $d_time;
     $block_s{$dev}{"pending_$dir"}{$sector}{"nr"} = $nr_sector;
+    $block_s{$dev}{"pending_$dir"}{$sector}{"flags"} = $flags;
 }
 
 # Collect info of FrontMerge pending I/O

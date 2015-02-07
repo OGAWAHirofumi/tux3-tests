@@ -46,6 +46,7 @@ my $perf_sched_data = "perf-sched.data";
 my $perf_block_data = "perf-block.data";
 my $perf_block_map = "perf-block.map";
 my $output_dir = "fsperf-output";
+my $debug_event_fname = "fsperf-debug.pl";
 
 # Don't exit even if sanity check found error
 my $opt_no_error = 0;
@@ -59,6 +60,8 @@ my $opt_no_sched = 0;
 my $opt_call_graph = undef;
 # Only re-plot graph
 my $opt_graph_only = 0;
+# Debugging for perf event
+my $opt_debug_event = 0;
 
 my @opt_target_pid = ();
 my @opt_target_wid = ();
@@ -1960,6 +1963,7 @@ EOF
 
 #sub block::block_rq_remap
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion to whole disk: $dev
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -1972,6 +1976,7 @@ EOF
 
 #sub block::block_bio_remap
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion to whole disk: $dev
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -1984,6 +1989,7 @@ EOF
 
 #sub block::block_split
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion to whole disk: $dev
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -1996,6 +2002,7 @@ EOF
 
 #sub block::block_unplug
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$nr_rq, $comm) = @_;
@@ -2005,6 +2012,7 @@ EOF
 
 #sub block::block_plug
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm) = @_;
@@ -2014,6 +2022,7 @@ EOF
 
 #sub block::block_sleeprq
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion to whole disk: $dev
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -2026,6 +2035,7 @@ EOF
 
 #sub block::block_getrq
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion to whole disk: $dev
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -2038,6 +2048,7 @@ EOF
 
 sub block::block_bio_queue
 {
+    debug_event(@_) if ($opt_debug_event);
     # remap partion to whole disk: $dev
     $_[7] = get_whole_dev($_[7]);
 
@@ -2075,6 +2086,7 @@ sub block::block_bio_queue
 
 sub block::block_bio_frontmerge
 {
+    debug_event(@_) if ($opt_debug_event);
     # remap partion $dev to whole disk
     $_[7] = get_whole_dev($_[7]);
 
@@ -2098,6 +2110,7 @@ sub block::block_bio_frontmerge
 
 sub block::block_bio_backmerge
 {
+    debug_event(@_) if ($opt_debug_event);
     # remap partion $dev to whole disk
     $_[7] = get_whole_dev($_[7]);
 
@@ -2121,6 +2134,7 @@ sub block::block_bio_backmerge
 
 #sub block::block_bio_complete
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion $dev to whole disk
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -2133,6 +2147,7 @@ sub block::block_bio_backmerge
 
 #sub block::block_bio_bounce
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion $dev to whole disk
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -2145,6 +2160,7 @@ sub block::block_bio_backmerge
 
 sub block::block_rq_issue
 {
+    debug_event(@_) if ($opt_debug_event);
     # remap partion $dev to whole disk
     $_[7] = get_whole_dev($_[7]);
 
@@ -2187,6 +2203,7 @@ sub block::block_rq_issue
 
 #sub block::block_rq_insert
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion $dev to whole disk
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -2199,6 +2216,7 @@ sub block::block_rq_issue
 
 sub block::block_rq_complete
 {
+    debug_event(@_) if ($opt_debug_event);
     # remap partion $dev to whole disk
     $_[7] = get_whole_dev($_[7]);
 
@@ -2230,6 +2248,7 @@ sub block::block_rq_complete
 
 sub block::block_rq_requeue
 {
+    debug_event(@_) if ($opt_debug_event);
     # remap partion $dev to whole disk
     $_[7] = get_whole_dev($_[7]);
 
@@ -2257,6 +2276,7 @@ sub block::block_rq_requeue
 
 #sub block::block_rq_abort
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    # remap partion $dev to whole disk
 #    $_[7] = get_whole_dev($_[7]);
 #
@@ -2547,6 +2567,7 @@ sub sched_stat
 
 #sub sched::sched_pi_setprio
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid, $oldprio, $newprio) = @_;
@@ -2556,6 +2577,7 @@ sub sched_stat
 
 sub sched::sched_stat_runtime
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$comm, $pid, $runtime, $vruntime) = @_;
@@ -2570,6 +2592,7 @@ sub sched::sched_stat_runtime
 
 sub sched::sched_stat_blocked
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$comm, $pid, $delay) = @_;
@@ -2584,6 +2607,7 @@ sub sched::sched_stat_blocked
 
 #sub sched::sched_stat_iowait
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid, $delay) = @_;
@@ -2593,6 +2617,7 @@ sub sched::sched_stat_blocked
 
 sub sched::sched_stat_sleep
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$comm, $pid, $delay) = @_;
@@ -2607,6 +2632,7 @@ sub sched::sched_stat_sleep
 
 sub sched::sched_stat_wait
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$comm, $pid, $delay) = @_;
@@ -2621,6 +2647,7 @@ sub sched::sched_stat_wait
 
 #sub sched::sched_process_exec
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$filename, $pid, $old_pid) = @_;
@@ -2630,6 +2657,7 @@ sub sched::sched_stat_wait
 
 #sub sched::sched_process_fork
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$parent_comm, $parent_pid, $child_comm, $child_pid) = @_;
@@ -2639,6 +2667,7 @@ sub sched::sched_stat_wait
 
 #sub sched::sched_process_wait
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid, $prio) = @_;
@@ -2648,33 +2677,37 @@ sub sched::sched_stat_wait
 
 #sub sched::sched_wait_task
 #{
-#	my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	    $common_pid, $common_comm,
-#	    $comm, $pid, $prio) = @_;
+#    debug_event(@_) if ($opt_debug_event);
+#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+#	$common_pid, $common_comm,
+#	$comm, $pid, $prio) = @_;
 #
 #    update_cur_time($common_secs, $common_nsecs);
 #}
 
 #sub sched::sched_process_exit
 #{
-#	my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	    $common_pid, $common_comm,
-#	    $comm, $pid, $prio) = @_;
+#    debug_event(@_) if ($opt_debug_event);
+#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+#	$common_pid, $common_comm,
+#	$comm, $pid, $prio) = @_;
 #
 #    update_cur_time($common_secs, $common_nsecs);
 #}
 
 #sub sched::sched_process_free
 #{
-#	my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	    $common_pid, $common_comm,
-#	    $comm, $pid, $prio) = @_;
+#    debug_event(@_) if ($opt_debug_event);
+#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+#	$common_pid, $common_comm,
+#	$comm, $pid, $prio) = @_;
 #
 #    update_cur_time($common_secs, $common_nsecs);
 #}
 
 #sub sched::sched_migrate_task
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid, $prio, $orig_cpu, $dest_cpu) = @_;
@@ -2696,6 +2729,7 @@ sub remember_switch($$$$)
 
 sub sched::sched_switch
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$prev_comm, $prev_pid, $prev_prio, $prev_state,
@@ -2724,6 +2758,7 @@ sub sched::sched_switch
 
 #sub sched::sched_wakeup_new
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid, $prio, $success,
@@ -2734,6 +2769,7 @@ sub sched::sched_switch
 
 #sub sched::sched_wakeup
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid, $prio, $success,
@@ -2744,6 +2780,7 @@ sub sched::sched_switch
 
 #sub sched::sched_kthread_stop_ret
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$ret) = @_;
@@ -2753,6 +2790,7 @@ sub sched::sched_switch
 
 #sub sched::sched_kthread_stop
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$comm, $pid) = @_;
@@ -2926,6 +2964,7 @@ sub is_interesting_wid($)
 
 sub workqueue::workqueue_execute_start
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$work, $function) = @_;
@@ -2942,6 +2981,7 @@ sub workqueue::workqueue_execute_start
 
 sub workqueue::workqueue_execute_end
 {
+    debug_event(@_) if ($opt_debug_event);
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm,
 	$work) = @_;
@@ -2971,6 +3011,7 @@ sub workqueue::workqueue_execute_end
 
 #sub workqueue::workqueue_activate_work
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$work) = @_;
@@ -2978,6 +3019,7 @@ sub workqueue::workqueue_execute_end
 
 #sub workqueue::workqueue_queue_work
 #{
+#    debug_event(@_) if ($opt_debug_event);
 #    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 #	$common_pid, $common_comm,
 #	$work, $function, $workqueue, $req_cpu, $cpu) = @_;
@@ -3089,6 +3131,7 @@ sub trace_begin
     $opt_no_error = $ENV{FSPERF_NO_ERROR};
     $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
     $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
+    $opt_debug_event = $ENV{FSPERF_DEBUG_EVENT};
 
     read_devmap();
 }
@@ -3446,6 +3489,7 @@ Options:
  --no-error                   Don't exit even if sanity check found error.
  --no-sched                   Don't run sched events
  --graph-only                 Run re-plot graph only
+ --debug-event                Logging all perf event to log
  -h, --help                   This help.
 
 EOF
@@ -3465,6 +3509,7 @@ sub cmd_report
 			 "no-error"		=> \$opt_no_error,
 			 "no-sched"		=> \$opt_no_sched,
 			 "graph-only"		=> \$opt_graph_only,
+			 "debug-event"		=> \$opt_debug_event,
 			 "help"			=> \$help,
 			);
 
@@ -3487,6 +3532,7 @@ sub cmd_report
     $ENV{FSPERF_NO_ERROR} = $opt_no_error;
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;
+    $ENV{FSPERF_DEBUG_EVENT} = $opt_debug_event;
 
     run_cmd();
 }
@@ -3498,6 +3544,7 @@ Usage: $0 [record|report|help] <options> -- <cmdline>
 
     record           Records performance data
     report           Make report from result of recorded data
+    debug_run        Run script outputted by "report --debug-event"
     help             This help
 
 EOF
@@ -3505,9 +3552,36 @@ EOF
     exit(1);
 }
 
+# For performance test, collects all events. Then event handlers with
+# collected data without perf.
+#
+#    $ ./fsperf.pl report --debug-event
+#    $ perl -d:NYTProf ./fsperf.pl debug_run
+#
+my $debug_fh;
+sub debug_event(@)
+{
+    if (not $debug_fh) {
+	open($debug_fh, ">> $debug_event_fname")
+	    or die "open($debug_event_fname): $!";
+    }
+
+    my $event = $_[0];
+    my $args = join(",", map { "\"$_\""; } @_);
+    print $debug_fh "\@args = ($args);\n";
+    print $debug_fh "$event(\@args);\n";
+}
+
+sub cmd_debug_run
+{
+    require "$debug_event_fname";
+    exit(0);
+}
+
 my %cmd_func = (
 		"record"	=> \&cmd_record,
 		"report"	=> \&cmd_report,
+		"debug_run"	=> \&cmd_debug_run,
 		"help"		=> \&cmd_help,
 	       );
 

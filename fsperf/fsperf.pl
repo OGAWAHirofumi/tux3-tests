@@ -1705,6 +1705,9 @@ sub block_main
     my @devs = sort { $a <=> $b } keys(%block_s);
     my %result;
 
+    # Close all to prevent to closed $log
+    close_file_all();
+
     my $log = open_file("fsperf-block.log", 0644, 1);
 
     calc_start_end_time();
@@ -2828,6 +2831,9 @@ sub sched_main
     }
 
     my @ids = sort { id_for_cmp($a) <=> id_for_cmp($b) } keys(%sched_s);
+
+    # Close all to prevent to closed $log
+    close_file_all();
 
     # Prepare for sched_summary.gp
     output_plot_sched_summary_pre(scalar(@ids));

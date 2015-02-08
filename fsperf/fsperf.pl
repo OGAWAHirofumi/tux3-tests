@@ -486,6 +486,7 @@ EOF
     print $fh "set xlabel '${xlabel}'\n" if ($xlabel);
     print $fh "set ylabel '${ylabel}'\n" if ($ylabel);
     print $fh "set grid\n";
+    print $fh "set termoption noenhanced\n";
 
     foreach my $conf (@configs) {
 	if (defined($conf)) {

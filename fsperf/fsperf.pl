@@ -172,7 +172,7 @@ sub to_nsec($)
     return int($tv64 % NSEC_PER_SEC);
 }
 
-sub to_sec_nsec($)
+sub to_float_tv64($)
 {
     my $tv64 = shift;
     return to_sec($tv64) + to_nsec($tv64) / NSEC_PER_SEC;
@@ -1771,8 +1771,8 @@ EOF
 	    my $total_mb = ($total_blk * 512) / (1024 * 1024);
 	    printf $log " %4s   %8s %8.2f      %8.2f     %8.2f      %8u\n",
 		kdevname($dev), $DIR_LONGNAME{$dir},
-		$total_mb / to_sec_nsec($elapse),
-		$total_mb, $total_io / to_sec_nsec($elapse),
+		$total_mb / to_float_tv64($elapse),
+		$total_mb, $total_io / to_float_tv64($elapse),
 		$total_io;
 	}
     }
@@ -1916,7 +1916,7 @@ EOF
 	    close_file($fh);
 
 	    # Output short summary
-	    my $avg_nr = $total_nr / to_sec_nsec($elapse);
+	    my $avg_nr = $total_nr / to_float_tv64($elapse);
 	    my $avg_distance = $total_distance / $total_nr;
 	    printf $log " %4s    %8s   %8.2f      %8.2f      %8.2f     %12.2f\n",
 		kdevname($dev), $DIR_LONGNAME{$dir}, $avg_nr, $total_nr,

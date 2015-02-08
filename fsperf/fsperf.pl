@@ -959,8 +959,9 @@ sub pr_flush_debug(@)
 #	$common_nsecs, $common_pid, $common_comm,
 #	$dev, $sector, $nr_sector, $rwbs, $comm, $msg) = @_;
 #    my $time_str = tv64_str(to_tv64($common_secs, $common_nsecs));
+#    my $idx = flush_pending_idx($dev);
 #
-#    print "$event_name: $time_str, $rwbs, $sector, $nr_sector: $msg\n";
+#    print "$event_name: $time_str, $rwbs, $sector, $nr_sector: $idx: $msg\n";
 }
 
 # FLUSH only request uses sector==0, so we can't match queue and
@@ -1039,6 +1040,15 @@ sub flush_issue($$)
 
     # If FLUSH command was requeued, update requests on previous pending idx.
     my $idx = $requeued ? flush_running_idx($dev) : flush_pending_idx($dev);
+
+    if (!defined($block_s{$dev}{"flush_pending_$idx"})) {
+	# If there is no pending, it's strange. So ignore to avoid to
+	# call toggle_flush_idx(). Maybe, missed some block::block_rq_requeue
+	# events?
+	$requeued = 0 unless ($requeued);
+	pr_warn("FLUSH issue without pending: requeue event was missed? ($requeued, $idx)");
+	return;
+    }
 
     foreach my $s (keys(%{$block_s{$dev}{"flush_pending_$idx"}})) {
 	# If data part was completed, use F2

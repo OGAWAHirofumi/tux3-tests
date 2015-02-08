@@ -28,7 +28,8 @@ if ($ENV{'PERF_EXEC_PATH'}) {
 
 use strict;
 use warnings;
-use bignum;
+#use bignum;
+use Math::BigInt try => 'GMP';
 use Getopt::Long;
 use Cwd;
 
@@ -304,7 +305,7 @@ sub kallsyms_load($)
 	my $need_sort = 0;
 	while (<$fh>) {
 	    if (m!^($re_addr8|$re_addr16) (\S) (\S+)(\s+\[(.*)\])?$!) {
-		my $addr = hex($1);
+		my $addr = Math::BigInt->from_hex($1);
 		my $sym_type = $2;
 		my $sym = $3;
 		my $mod = $5 || "";
@@ -1804,7 +1805,7 @@ EOF
 	my $req_min = $block_s{$dev}{"req_min"} || 0;
 
 	# Output short summary
-	my $avg = $req_blocks / $req_nr;
+	my $avg = $req_nr ? ($req_blocks / $req_nr) : 0;
 	printf $log " %4s  %8.2f  %8u  %8u\n",
 	    kdevname($dev), $avg, $req_min, $req_max;
     }
@@ -1842,7 +1843,7 @@ EOF
 		my $nr = $block_s{$dev}{"lat_${type}_nr_${dir}"} || 0;
 		my $max = $block_s{$dev}{"lat_${type}_max_${dir}"} || 0;
 		my $min = $block_s{$dev}{"lat_${type}_min_${dir}"} || 0;
-		my $avg = $total / $nr;
+		my $avg = $nr ? ($total / $nr) : 0;
 
 		printf $log " %4s   %4s   %8s  %s  %s  %s\n",
 		    kdevname($dev), uc($type), $DIR_LONGNAME{$dir},
@@ -1930,7 +1931,7 @@ EOF
 
 	    # Output short summary
 	    my $avg_nr = $total_nr / to_float_tv64($elapse);
-	    my $avg_distance = $total_distance / $total_nr;
+	    my $avg_distance = $total_nr ? ($total_distance / $total_nr) : 0;
 	    printf $log " %4s    %8s   %8.2f      %8.2f      %8.2f     %12.2f\n",
 		kdevname($dev), $DIR_LONGNAME{$dir}, $avg_nr, $total_nr,
 		($avg_distance * 512) / (1024 * 1024),
@@ -3606,6 +3607,11 @@ my %cmd_func = (
 
 # Called from perf script?
 unless ($ENV{'PERF_EXEC_PATH'}) {
+    use Config;
+    if ($Config{'ivsize'} < 8 or $Config{'uvsize'} < 8) {
+	pr_warn("Perl IV/UV size may be too small for this program.");
+    }
+
     my $cmd = shift(@ARGV);
     if ($cmd and $cmd_func{$cmd}) {
 	$cmd_func{$cmd}(@ARGV);

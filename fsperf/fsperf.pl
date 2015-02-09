@@ -9,6 +9,20 @@
 #use Carp;
 #$SIG{ __DIE__ } = sub { Carp::confess( @_ ) };
 
+BEGIN {
+    use Config;
+
+    # use bignum if IV or UV is small for this program.
+    my $too_small = ($Config{'ivsize'} < 8 or $Config{'uvsize'} < 8);
+    if ($too_small) {
+	if (not $ENV{'PERF_EXEC_PATH'}) {
+	    warn "Warning: Perl IV/UV size may be too small to run.\n";
+	}
+	require bignum;
+	import bignum;
+    }
+}
+
 if ($ENV{'PERF_EXEC_PATH'}) {
     no warnings;
     use lib "$ENV{'PERF_EXEC_PATH'}/scripts/perl/Perf-Trace-Util/lib";
@@ -28,7 +42,6 @@ if ($ENV{'PERF_EXEC_PATH'}) {
 
 use strict;
 use warnings;
-#use bignum;
 use Math::BigInt try => 'GMP';
 use Getopt::Long;
 use Cwd;
@@ -3649,11 +3662,6 @@ my %cmd_func = (
 
 # Called from perf script?
 unless ($ENV{'PERF_EXEC_PATH'}) {
-    use Config;
-    if ($Config{'ivsize'} < 8 or $Config{'uvsize'} < 8) {
-	pr_warn("Perl IV/UV size may be too small for this program.");
-    }
-
     my $cmd = shift(@ARGV);
     if ($cmd and $cmd_func{$cmd}) {
 	$cmd_func{$cmd}(@ARGV);

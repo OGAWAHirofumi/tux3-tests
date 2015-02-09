@@ -1218,13 +1218,22 @@ sub add_io(@)
     num_add($block_s{$dev}{"complete_blocks_$dir"}[$cur_time], $nr_sector);
     num_add($block_s{$dev}{"complete_io_$dir"}[$cur_time], 1);
     pr_warn("add_io: unknown dir ($dir)") if ($dir ne "r" and $dir ne "w");
+}
 
-    num_add($block_s{$dev}{"req_blocks"}, $nr_sector);
-    num_add($block_s{$dev}{"req_nr"}, 1);
+# Collect completed blocks and IO/s
+sub add_req(@)
+{
+    my ($key, $rwbs_flags,
+	$event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm,
+	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
+
+    num_add($block_s{$dev}{"req_blocks"}{$key}, $nr_sector);
+    num_add($block_s{$dev}{"req_nr"}{$key}, 1);
     # Remember maximum sectors on single request
-    num_max($block_s{$dev}{"req_max"}, $nr_sector);
+    num_max($block_s{$dev}{"req_max"}{$key}, $nr_sector);
     # Remember minimum sectors on single request
-    num_min($block_s{$dev}{"req_min"}, $nr_sector);
+    num_min($block_s{$dev}{"req_min"}{$key}, $nr_sector);
 }
 
 # Update queue depth
@@ -1802,20 +1811,23 @@ EOF
     # Summary Request size
     print $log <<"EOF";
 
-                    Request size (Complete)
+                    Request size
 -----------------------------------------------------------------
-  Dev       Avg       Min       Max    (1 == 512 bytes)
+  Dev      Type       NR      Avg    Min    Max  (1 == 512 bytes)
 EOF
     foreach my $dev (@devs) {
-	my $req_blocks = $block_s{$dev}{"req_blocks"} || 0;
-	my $req_nr = $block_s{$dev}{"req_nr"} || 0;
-	my $req_max = $block_s{$dev}{"req_max"} || 0;
-	my $req_min = $block_s{$dev}{"req_min"} || 0;
+	foreach my $type ("Queue", "Complete") {
+	    my $key = lc($type);
+	    my $req_blocks = $block_s{$dev}{"req_blocks"}{$key} || 0;
+	    my $req_nr = $block_s{$dev}{"req_nr"}{$key} || 0;
+	    my $req_max = $block_s{$dev}{"req_max"}{$key} || 0;
+	    my $req_min = $block_s{$dev}{"req_min"}{$key} || 0;
 
-	# Output short summary
-	my $avg = $req_nr ? ($req_blocks / $req_nr) : 0;
-	printf $log " %4s  %8.2f  %8u  %8u\n",
-	    kdevname($dev), $avg, $req_min, $req_max;
+	    # Output short summary
+	    my $avg = $req_nr ? ($req_blocks / $req_nr) : 0;
+	    printf $log " %4s  %8s %8u %8.2f  %5u  %5u\n",
+		kdevname($dev), $type, $req_nr, $avg, $req_min, $req_max;
+	}
     }
 
     # Summary Merged Request
@@ -2118,6 +2130,7 @@ sub block::block_bio_queue
     if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
 	if ($nr_sector) {
 	    add_bno($rwbs_flags, @_);
+	    add_req("queue", $rwbs_flags, @_);
 	}
 	add_queue_pending($rwbs_flags, @_);
     } else {
@@ -2280,6 +2293,7 @@ sub block::block_rq_complete
 	if ($nr_sector) {
 	    add_bno($rwbs_flags, @normalized_args);
 	    add_io($rwbs_flags, @normalized_args);
+	    add_req("complete", $rwbs_flags, @normalized_args);
 	}
 	add_complete_pending($rwbs_flags, @normalized_args);
     } else {

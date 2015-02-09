@@ -1379,6 +1379,10 @@ sub add_frontmerge_pending(@)
 	    # Remove old pending I/O
 	    delete($block_s{$dev}{$pend_str}{$sector});
 
+	    num_add($block_s{$dev}{"frontmerge"}{"nr"}, 1);
+	    num_add($block_s{$dev}{"frontmerge"}{"blocks"}, $nr_sector);
+	    num_add($block_s{$dev}{"combinemerge"}{"nr"}, 1);
+	    num_add($block_s{$dev}{"combinemerge"}{"blocks"}, $nr_sector);
 	    # Front merge
 	    $nr_sector += $nr;
 
@@ -1416,6 +1420,10 @@ sub add_backmerge_pending(@)
 	    # Remove old pending I/O
 	    delete($block_s{$dev}{$pend_str}{$sector});
 
+	    num_add($block_s{$dev}{"backmerge"}{"nr"}, 1);
+	    num_add($block_s{$dev}{"backmerge"}{"blocks"}, $nr_sector);
+	    num_add($block_s{$dev}{"combinemerge"}{"nr"}, 1);
+	    num_add($block_s{$dev}{"combinemerge"}{"blocks"}, $nr_sector);
 	    # Back merge
 	    $nr += $nr_sector;
 
@@ -1808,6 +1816,26 @@ EOF
 	my $avg = $req_nr ? ($req_blocks / $req_nr) : 0;
 	printf $log " %4s  %8.2f  %8u  %8u\n",
 	    kdevname($dev), $avg, $req_min, $req_max;
+    }
+
+    # Summary Merged Request
+    print $log <<"EOF";
+
+                    Merged Request
+-----------------------------------------------------------------
+  Dev      Type       NR      Avg      Total      (1 == 512 bytes)
+EOF
+    foreach my $dev (@devs) {
+	foreach my $type ("Front", "Back", "Combine") {
+	    my $key = lc($type) . "merge";
+	    my $nr = $block_s{$dev}{$key}{"nr"} || 0;
+	    my $blocks = $block_s{$dev}{$key}{"blocks"} || 0;
+
+	    # Output short summary
+	    my $avg = $nr ? ($blocks / $nr) : 0;
+	    printf $log " %4s  %8s %8u %8.2f   %8u\n",
+		kdevname($dev), $type, $nr, $avg, $blocks;
+	}
     }
 
     # Summary Queue depth

@@ -74,6 +74,8 @@ my $opt_no_sched = 0;
 my $opt_call_graph = undef;
 # Only re-plot graph
 my $opt_graph_only = 0;
+# Print kallsyms
+my $opt_print_kallsyms = 0;
 # Debugging for perf event
 my $opt_debug_event = 0;
 
@@ -322,6 +324,8 @@ sub kallsyms_load($)
 		my $sym_type = $2;
 		my $sym = $3;
 		my $mod = $5 || "";
+
+		print $_ if ($opt_print_kallsyms);
 
 		my %m = (
 			 addr => $addr,
@@ -3612,6 +3616,13 @@ sub cmd_report
     run_cmd();
 }
 
+sub cmd_kallsyms
+{
+    $opt_print_kallsyms = 1;
+    kallsyms_load($perf_sched_data);
+    exit(0);
+}
+
 sub cmd_help
 {
     print <<"EOF";
@@ -3619,6 +3630,7 @@ Usage: $0 [record|report|help] <options> -- <cmdline>
 
     record           Records performance data
     report           Make report from result of recorded data
+    kallsyms         Print kallsyms embedded in $perf_sched_data
     debug_run        Run script outputted by "report --debug-event"
     help             This help
 
@@ -3656,6 +3668,7 @@ sub cmd_debug_run
 my %cmd_func = (
 		"record"	=> \&cmd_record,
 		"report"	=> \&cmd_report,
+		"kallsyms"	=> \&cmd_kallsyms,
 		"debug_run"	=> \&cmd_debug_run,
 		"help"		=> \&cmd_help,
 	       );

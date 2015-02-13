@@ -2613,31 +2613,18 @@ sub sched_stat
     }
 
     # Check workqueue work
-    if ($wq_state{$pid}) {
-	foreach my $wid (keys(%{$wq_state{$pid}})) {
-	    if (is_interesting_wid($wid)) {
-		my $time_start = $time - $elapse;
-		my $work_start = $wq_state{$pid}{$wid}{start};
-		# If {end} is undef, work is still running
-		my $work_end = $wq_state{$pid}{$wid}{end} || $time;
-		my $sym = $wq_state{$pid}{$wid}{sym};
+    foreach my $wid (wids_in_range($pid, $time, $elapse)) {
+	my $time_start = $time - $elapse;
+	my $work_start = $wq_state{$pid}{$wid}{start};
+	# If {end} is undef, work is still running
+	my $work_end = $wq_state{$pid}{$wid}{end} || $time;
+	my $sym = $wq_state{$pid}{$wid}{sym};
 
-		# There was no workqueue_execute_start event
-		if (!defined($wq_state{$pid}{$wid}{start})) {
-		    pr_warn("$wid is missing workqueue_execute_start event");
-		    next;
-		}
+	my $start = max($time_start, $work_start);
+	my $end = min($time, $work_end);
 
-		# Stat is in workqueue work?
-		if ($work_start < $time and $time_start < $work_end) {
-		    my $start = max($time_start, $work_start);
-		    my $end = min($time, $work_end);
-
-		    # Add stat as workqueue work
-		    sched_stat_process($type, $wid, $sym, $end, $end - $start);
-		}
-	    }
-	}
+	# Add stat as workqueue work
+	sched_stat_process($type, $wid, $sym, $end, $end - $start);
     }
 }
 
@@ -2806,6 +2793,23 @@ sub remember_switch($$$$)
     }
 }
 
+sub count_switch($$$)
+{
+    my $type = shift;
+    my $pid = shift;
+    my $time = shift;
+
+    # If switching from swapper, ignore
+    if ($pid != 0) {
+	num_add($sched_s{$pid}{$type}, 1);
+
+	# Check workqueue work
+	foreach my $wid (wids_in_range($pid, $time, 1)) {
+	    num_add($sched_s{$wid}{$type}, 1);
+	}
+    }
+}
+
 sub sched::sched_switch
 {
     debug_event(@_) if ($opt_debug_event);
@@ -2822,10 +2826,13 @@ sub sched::sched_switch
     $time = to_tv64($common_secs, $common_nsecs);
     if ($prev_state & TASK_INTERRUPTIBLE) {
 	remember_switch("S", $prev_pid, $prev_comm, $time);
+	count_switch("voluntary-S", $prev_pid, $time);
     } elsif ($prev_state & TASK_UNINTERRUPTIBLE) {
 	remember_switch("D", $prev_pid, $prev_comm, $time);
+	count_switch("voluntary-D", $prev_pid, $time);
     } elsif ($prev_state == TASK_RUNNING) {
 	remember_switch("R", $prev_pid, $prev_comm, $time);
+	count_switch("involuntary", $prev_pid, $time);
     } else {
 	delete($switch_state{$prev_pid});
     }
@@ -2915,6 +2922,9 @@ EOF
 	my $wait_time = $sched_s{$id}{W}{total} || 0;
 	my $sleep_time = $sched_s{$id}{S}{total} || 0;
 	my $block_time = $sched_s{$id}{D}{total} || 0;
+	my $voluntary_s = $sched_s{$id}{"voluntary-S"} || 0;
+	my $voluntary_d = $sched_s{$id}{"voluntary-D"} || 0;
+	my $involuntary = $sched_s{$id}{"involuntary"} || 0;
 	my $elapse;
 
 	if (!is_wid($id)) {
@@ -2957,6 +2967,14 @@ EOF
 	printf $log "       %16s (%6.2f%%)     %16s (%6.2f%%)\n",
 	    tv64_str($sleep_time), $elapse ? ($sleep_time * 100) / $elapse : 0,
 	    tv64_str($block_time), $elapse ? ($block_time * 100) / $elapse : 0;
+
+	printf $log "\n";
+	printf $log
+	    "       Voluntary(sleep) %9u     Voluntary(block) %9u\n",
+	    $voluntary_s, $voluntary_d;
+	printf $log
+	    "       Involuntary      %9u\n",
+	    $involuntary;
 
 	my $fh = open_id_datfile($id, "stat");
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
@@ -3042,6 +3060,37 @@ sub is_interesting_wid($)
 	return 1;
     }
     return 0;
+}
+
+# return wids if interesting and running in specified time range
+sub wids_in_range($$$)
+{
+    my $pid = shift;
+    my $time_end = shift;
+    my $elapse = shift;
+    my @wids;
+
+    foreach my $wid (keys(%{$wq_state{$pid}})) {
+	if (is_interesting_wid($wid)) {
+	    my $time_start = $time_end - $elapse;
+	    my $work_start = $wq_state{$pid}{$wid}{start};
+	    # If {end} is undef, work is still running
+	    my $work_end = $wq_state{$pid}{$wid}{end} || $time_end;
+
+	    # There was no workqueue_execute_start event
+	    if (!defined($wq_state{$pid}{$wid}{start})) {
+		pr_warn("$wid is missing workqueue_execute_start event");
+		next;
+	    }
+
+	    # Stat is in workqueue work?
+	    if ($work_start < $time_end and $time_start < $work_end) {
+		push(@wids, $wid);
+	    }
+	}
+    }
+
+    return @wids;
 }
 
 sub workqueue::workqueue_execute_start

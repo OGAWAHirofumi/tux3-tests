@@ -54,7 +54,7 @@ use Cwd;
 no strict "refs";
 use FileCache;
 
-my (%block_s, %sched_s, %switch_state, %wq_state);
+my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_block_data = "perf-block.data";
@@ -2600,7 +2600,7 @@ sub sched_stat_process
     }
 }
 
-sub sched_stat
+sub sched_stat($$$$$)
 {
     my $type = shift;
     my $pid = shift;
@@ -2627,6 +2627,27 @@ sub sched_stat
 	# Add stat as workqueue work
 	sched_stat_process($type, $wid, $sym, $end, $end - $start);
     }
+}
+
+sub sched_stat_cpu($$$$$)
+{
+    my $cpu = shift;
+    my $prev_type = shift;
+    my $prev_pid = shift;
+    my $next_pid = shift;
+    my $time = shift;
+
+    # per cpu stat
+    my $cid = to_cid($cpu);
+    if ($cpu_state{$cid}{time}) {
+	my $state = $cpu_state{$cid}{state};
+	my $prev = $cpu_state{$cid}{time};
+	sched_stat_process($state, $cid, $cid, $time, $time - $prev);
+    }
+
+    # If switched to swapper, remember state. Otherwise running
+    $cpu_state{$cid}{state} = ($next_pid == 0) ? $prev_type : "R";
+    $cpu_state{$cid}{time} = $time;
 }
 
 #sub sched::sched_pi_setprio
@@ -2794,15 +2815,19 @@ sub remember_switch($$$$)
     }
 }
 
-sub count_switch($$$)
+sub count_switch($$$$)
 {
     my $type = shift;
+    my $cpu = shift;
     my $pid = shift;
     my $time = shift;
 
     # If switching from swapper, ignore
     if ($pid != 0) {
 	num_add($sched_s{$pid}{$type}, 1);
+
+	my $cid = to_cid($cpu);
+	num_add($sched_s{$cid}{$type}, 1);
 
 	# Check workqueue work
 	foreach my $wid (wids_in_range($pid, $time, 1)) {
@@ -2821,26 +2846,32 @@ sub sched::sched_switch
 
     update_cur_time($common_secs, $common_nsecs);
 
-    my $time;
-
     # Remember state of previous task
-    $time = to_tv64($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+    my $prev_type = "R";
+    my $voluntary;
     if ($prev_state & TASK_INTERRUPTIBLE) {
-	remember_switch("S", $prev_pid, $prev_comm, $time);
-	count_switch("voluntary-S", $prev_pid, $time);
+	$prev_type = "S";
+	$voluntary = "voluntary-S";
     } elsif ($prev_state & TASK_UNINTERRUPTIBLE) {
-	remember_switch("D", $prev_pid, $prev_comm, $time);
-	count_switch("voluntary-D", $prev_pid, $time);
+	$prev_type = "D";
+	$voluntary = "voluntary-D";
     } elsif ($prev_state == TASK_RUNNING) {
-	remember_switch("R", $prev_pid, $prev_comm, $time);
-	count_switch("involuntary", $prev_pid, $time);
+	$prev_type = "R";
+	$voluntary = "involuntary";
+    }
+    if ($voluntary) {
+	remember_switch($prev_type, $prev_pid, $prev_comm, $time);
+	count_switch($voluntary, $common_cpu, $prev_pid, $time);
     } else {
 	delete($switch_state{$prev_pid});
     }
 
     # Remember state of next task
-    $time = to_tv64($common_secs, $common_nsecs);
     remember_switch("R", $next_pid, $next_comm, $time);
+
+    # Per cpu stat
+    sched_stat_cpu($common_cpu, $prev_type, $prev_pid, $next_pid, $time);
 }
 
 #sub sched::sched_wakeup_new
@@ -2892,6 +2923,11 @@ sub sched_main
     $perf_xend = $ENV{FSPERF_XEND};
 
     # Add stat from last switch to now
+    foreach my $cid (keys(%cpu_state)) {
+	my $cpu = is_cpu($cid);
+	my $state = $cpu_state{$cid}{state};
+	sched_stat_cpu($cpu, $state, 0, 0, $perf_end);
+    }
     foreach my $pid (keys(%switch_state)) {
 	my $comm = $switch_state{$pid}{comm};
 	my $type = $switch_state{$pid}{state};
@@ -2913,8 +2949,11 @@ sub sched_main
     my $log = open_file("fsperf-sched.log", 0644, 1);
 
     print $log <<"EOF";
-                      Schedule Time
+                        Schedule Time
 EOF
+    my $cpu_header = 1;
+    my $pid_header = 1;
+    my $wid_header = 1;
     foreach my $id (@ids) {
 	my $comm = $sched_s{$id}{comm};
 	my $start_time = $sched_s{$id}{start} || 0;
@@ -2928,10 +2967,35 @@ EOF
 	my $involuntary = $sched_s{$id}{"involuntary"} || 0;
 	my $elapse;
 
-	if (!is_wid($id)) {
+	if (defined(is_cpu($id))) {
 	    # Elapse time is whole time of task
 	    $elapse = $end_time - $start_time;
 
+	    if ($cpu_header) {
+		print $log <<"EOF";
+----------------------------------------------------------
+                        CPU (Based on sched_switch)
+EOF
+		$cpu_header = 0;
+	    }
+	    print $log <<"EOF";
+----------------------------------------------------------
+   CPU                       Start(sec)         End(sec)      Elapse(sec)
+EOF
+	    printf $log "%6s %15s %16s %16s %16s\n",
+		$id, " ",
+		tv64_str($start_time), tv64_str($end_time), tv64_str($elapse);
+	} elsif (!defined(is_wid($id))) {
+	    # Elapse time is whole time of task
+	    $elapse = $end_time - $start_time;
+
+	    if ($pid_header) {
+		print $log <<"EOF";
+----------------------------------------------------------
+                        Process (Based on sched_stat_*)
+EOF
+		$pid_header = 0;
+	    }
 	    print $log <<"EOF";
 ----------------------------------------------------------
    Pid            comm       Start(sec)         End(sec)      Elapse(sec)
@@ -2943,9 +3007,14 @@ EOF
 	    # Elapse time is only spent on work
 	    $elapse = $sched_s{$id}{elapse} || 0;
 
-	    print $log <<"EOF";
+	    if ($wid_header) {
+		print $log <<"EOF";
 ----------------------------------------------------------
-                        Workqueue work
+                        Workqueue work (Based on sched_stat_*)
+EOF
+		$wid_header = 0;
+	    }
+	    print $log <<"EOF";
 ----------------------------------------------------------
  Work-id                 func       Start(sec)         End(sec)      Elapse(sec)
 EOF
@@ -2970,7 +3039,7 @@ EOF
 	    tv64_str($block_time), $elapse ? ($block_time * 100) / $elapse : 0;
 
 	printf $log "\n";
-	if (is_wid($id)) {
+	if (defined(is_wid($id))) {
 	    my $nr_called = $sched_s{$id}{nr_called} || 0;
 	    printf $log "       Number of called %9u\n", $nr_called;
 	}
@@ -3010,6 +3079,27 @@ EOF
 
 ##################################
 #
+# cpu events to help sched stats
+#
+
+sub is_cpu($)
+{
+    my $cid = shift;
+
+    if ($cid =~ m!^cpu-(\d+)!) {
+	return $1;
+    }
+    return undef;
+}
+
+sub to_cid($)
+{
+    my $val = shift;
+    return "cpu-$val";
+}
+
+##################################
+#
 # workqueue events to help sched stats
 #
 
@@ -3023,21 +3113,28 @@ sub is_wid($)
     if ($wid =~ m!^work-(\d+)!) {
 	return $1;
     }
-    return 0;
+    return undef;
 }
 
 sub id_for_cmp($)
 {
     my $id = shift;
+    my $base = 10000000000;
 
-    my $wid_val = is_wid($id);
-    if ($wid_val) {
-	# $id is work_id, use value bigger than any pid
-	return 10000000000 + $wid_val;
+    my $cid_val = is_cpu($id);
+    if (defined($cid_val)) {
+	# $id is cpu_id
+	return $cid_val;
     }
 
-    # $id is pid
-    return $id;
+    my $wid_val = is_wid($id);
+    if (defined($wid_val)) {
+	# $id is work_id, use value bigger than any pid
+	return ($base * 2) + $wid_val;
+    }
+
+    # $id is pid, use value bigger than any cid
+    return $base + $id;
 }
 
 sub to_wid($)

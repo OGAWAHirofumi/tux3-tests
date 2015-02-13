@@ -2463,8 +2463,9 @@ sub output_plot_sched($$)
 	    $fh = open_file($fname_summary, 0755);
 	    $title = undef;
 	    $ylabel = undef;
-	    $ymin = "*";
-	    $ymax = "*";
+	    # yrange cuts only 4 (running, cpu wait, sleep, block) bars area
+	    $ymin = $ylow;
+	    $ymax = $ylow + $ylen * 4;
 	    $custom = "set xlabel \"$id ($comm)\" offset 0,1.5";
 	}
 

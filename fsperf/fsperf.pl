@@ -2969,6 +2969,10 @@ EOF
 	    tv64_str($block_time), $elapse ? ($block_time * 100) / $elapse : 0;
 
 	printf $log "\n";
+	if (is_wid($id)) {
+	    my $nr_called = $sched_s{$id}{nr_called} || 0;
+	    printf $log "       Number of called %9u\n", $nr_called;
+	}
 	printf $log
 	    "       Voluntary(sleep) %9u     Voluntary(block) %9u\n",
 	    $voluntary_s, $voluntary_d;
@@ -3108,6 +3112,8 @@ sub workqueue::workqueue_execute_start
     $wq_state{$common_pid}{$wid}{start} = to_tv64($common_secs, $common_nsecs);
     $wq_state{$common_pid}{$wid}{end} = undef;
     $wq_state{$common_pid}{$wid}{sym} = kallsyms_find_by_addr($function);
+
+    num_add($sched_s{$wid}{nr_called}, 1);
 }
 
 sub workqueue::workqueue_execute_end

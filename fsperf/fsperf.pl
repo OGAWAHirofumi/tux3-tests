@@ -2798,9 +2798,12 @@ sub remember_switch($$$$)
     my $comm = shift;
     my $time = shift;
 
-    $switch_state{$pid}{state} = $type;
-    $switch_state{$pid}{comm} = $comm;
-    $switch_state{$pid}{time} = $time;
+    # Ignore swapper
+    if ($pid != 0) {
+	$switch_state{$pid}{state} = $type;
+	$switch_state{$pid}{comm} = $comm;
+	$switch_state{$pid}{time} = $time;
+    }
 }
 
 sub sched::sched_switch
@@ -2817,12 +2820,12 @@ sub sched::sched_switch
 
     # Remember state of previous task
     $time = to_tv64($common_secs, $common_nsecs);
-    if ($prev_state & TASK_RUNNING) {
-	remember_switch("R", $prev_pid, $prev_comm, $time);
-    } elsif ($prev_state & TASK_INTERRUPTIBLE) {
+    if ($prev_state & TASK_INTERRUPTIBLE) {
 	remember_switch("S", $prev_pid, $prev_comm, $time);
     } elsif ($prev_state & TASK_UNINTERRUPTIBLE) {
 	remember_switch("D", $prev_pid, $prev_comm, $time);
+    } elsif ($prev_state == TASK_RUNNING) {
+	remember_switch("R", $prev_pid, $prev_comm, $time);
     } else {
 	delete($switch_state{$prev_pid});
     }

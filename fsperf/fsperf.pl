@@ -314,7 +314,7 @@ sub kallsyms_load($)
 	my $re_addr16 = $re_addr . "{16}";
 
 	# No way to dump kallsyms by perf, so use "strings"
-	open(my $fh, "strings $data |") or die "Couldn't run `strings': $!";
+	open(my $fh, "-|", "strings $data") or die "Couldn't run `strings': $!";
 
 	my $last = -1;
 	my $need_sort = 0;
@@ -3455,7 +3455,7 @@ sub get_kdev($)
     my $path = shift;
 
     # FIXME: there is better portable way?
-    open(my $lsblk, "lsblk -l -n -o MAJ:MIN $path |")
+    open(my $lsblk, "-|", "lsblk -l -n -o MAJ:MIN $path")
 	or die "Couldn't run lsblk: $!";
     my $line = <$lsblk>;
     close($lsblk);
@@ -3472,7 +3472,7 @@ sub get_kdev($)
 sub make_devmap
 {
     # Find whole device from partition
-    open(my $lsblk, "lsblk -l -n -o MAJ:MIN,TYPE |")
+    open(my $lsblk, "-|", "lsblk -l -n -o MAJ:MIN,TYPE")
 	or die "Couldn't run lsblk: $!";
 
     my $whole_disk;
@@ -3494,7 +3494,7 @@ sub make_devmap
     close($lsblk);
 
     # create mapping of partition => whole
-    open(my $fh, "> $perf_block_map")
+    open(my $fh, ">", "$perf_block_map")
 	or die "Couldn't create $perf_block_map: $!";
     foreach my $dev (keys(%devmap)) {
 	print $fh "$dev $devmap{$dev}\n";
@@ -3507,7 +3507,7 @@ sub read_devmap
     my $fh;
 
     # read mapping of partition => whole
-    unless (open($fh, "< $perf_block_map")) {
+    unless (open($fh, "<", "$perf_block_map")) {
 	pr_warn("Couldn't open $perf_block_map");
 	return;
     }
@@ -3805,7 +3805,7 @@ my $debug_fh;
 sub debug_event(@)
 {
     if (not $debug_fh) {
-	open($debug_fh, ">> $debug_event_fname")
+	open($debug_fh, ">>", "$debug_event_fname")
 	    or die "open($debug_event_fname): $!";
     }
 
@@ -3817,7 +3817,7 @@ sub debug_event(@)
 
 sub cmd_debug_run
 {
-    require "$debug_event_fname";
+    require $debug_event_fname;
     exit(0);
 }
 

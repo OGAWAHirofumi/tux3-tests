@@ -3082,6 +3082,9 @@ EOF
 	    print $fh "\n";
 	}
 	close_file($fh);
+	# Make sure sched_*_time.dat is available for sched_summary.gp
+	my $dummy = open_id_datfile($id, "time");
+	close_file($dummy);
 
 	# Create sched plot
 	output_plot_sched($id, $comm);

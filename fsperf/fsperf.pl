@@ -1628,15 +1628,15 @@ sub add_complete_pending(@)
 	my $fname_q2c = sprintf("lat_q2c_%s", $d);
 	my $fname_d2c = sprintf("lat_d2c_%s", $d);
 
-	# Create file if need
-	my $fh_q2c = open_dev_datfile($dev, $fname_q2c);
-	my $fh_d2c = open_dev_datfile($dev, $fname_d2c);
-
 	my $time_str = tv64_str($time);
+
 	# Output Q2C latency time
+	my $fh_q2c = open_dev_datfile($dev, $fname_q2c);
 	my $lat_q2c_str = tv64_str($lat_q2c);
 	print $fh_q2c "$time_str $lat_q2c_str\n";
+
 	# Output D2C latency time
+	my $fh_d2c = open_dev_datfile($dev, $fname_d2c);
 	my $lat_d2c_str = tv64_str($lat_d2c);
 	print $fh_d2c "$time_str $lat_d2c_str\n";
     }

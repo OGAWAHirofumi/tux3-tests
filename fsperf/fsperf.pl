@@ -982,6 +982,11 @@ sub pr_flush_debug(@)
 #    print "$event_name: $time_str, $rwbs, $sector, $nr_sector: $idx: $msg\n";
 }
 
+#
+# FLUSH sequence was changed at kernel-v3.18.
+# (block::block_rq_complete() was supported for FLUSH command too)
+my $flush_has_complete = 0;
+#
 # FLUSH only request uses sector==0, so we can't match queue and
 # complete. To identify roughly, use unique dummy sector number.
 my $pending_sector = -1;
@@ -1087,14 +1092,20 @@ sub flush_complete($$)
     my $time = shift;
     my $dev = shift;
     my $idx = flush_running_idx($dev);
+    my $done = 0;
 
     foreach my $s (keys(%{$block_s{$dev}{"flush_pending_$idx"}})) {
 	# If data part was completed, use F2
 	my $part = $block_s{$dev}{"pending_w"}{$s}{"D"} ? "F2C" : "F1C";
 	$block_s{$dev}{"pending_w"}{$s}{$part} = $time;
+
+	# Finished FLUSH command
+	$done = 1;
     }
 
     delete($block_s{$dev}{"flush_pending_$idx"});
+
+    return $done;
 }
 
 # Cancel flush_issue()
@@ -1488,8 +1499,10 @@ sub add_issue_pending(@)
 		pr_flush_debug(@_, "issue data");
 	    }
 	    if ($flags & RWBS_FLUSH) {
-		# Data part issued, this means FLUSH command was done
-		flush_complete($time, $dev);
+		if (!$flush_has_complete) {
+		    # Data part issued, this means FLUSH command was done
+		    flush_complete($time, $dev);
+		}
 	    } elsif ($flags & RWBS_FUA) {
 		# FUA request without FLUSH
 	    }
@@ -1512,25 +1525,34 @@ sub add_complete_pending(@)
     my $pend_str = "pending_$dir";
 
     if ($nr_sector == 0) {
-	pr_flush_debug(@_, "done");
-
 	# Request included FLUSH was done
 	if ($sector == 0) {
 	    # FLUSH request without data, get from fake sector by FIFO order
 	    $sector = unique_complete_sector();
 	}
 	if (!defined($block_s{$dev}{$pend_str}{$sector})) {
-	    my $devname = kdevname($dev);
-	    pr_warn("$event_name: Missing queue event: ($devname): ",
-		    make_io_str($time, $dir, $sector, $nr_sector));
+	    # FLUSH command completion
+	    my $done = flush_complete($time, $dev);
+	    if ($done) {
+		pr_flush_debug(@_, "complete flush");
+		$flush_has_complete = 1;
+	    } else {
+		my $devname = kdevname($dev);
+		pr_warn("$event_name: Missing queue event: ($devname): ",
+			make_io_str($time, $dir, $sector, $nr_sector));
+	    }
 	    return;
 	}
 
-	my $flags = $block_s{$dev}{$pend_str}{$sector}{"flags"};
-	if (is_unique_sector($sector) or
-	    ($flags & RWBS_FUA) and !($rwbs_flags & RWBS_FUA)) {
-	    # FLUSH only request or FLUSH for converted FUA was done
-	    flush_complete($time, $dev);
+	pr_flush_debug(@_, "done");
+
+	if (!$flush_has_complete) {
+	    my $flags = $block_s{$dev}{$pend_str}{$sector}{"flags"};
+	    if (is_unique_sector($sector) or
+		($flags & RWBS_FUA) and !($rwbs_flags & RWBS_FUA)) {
+		# FLUSH only request or FLUSH for converted FUA was done
+		flush_complete($time, $dev);
+	    }
 	}
 
 	# FLUSH request was done

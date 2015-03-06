@@ -1234,6 +1234,23 @@ sub add_bno(@)
 	$sector + $nr_sector, "\n";
 }
 
+# Collect queued blocks (before merge to separate META and non-META)
+sub add_queue_io(@)
+{
+    my ($rwbs_flags,
+	$event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm,
+	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
+
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE | RWBS_META));
+
+    num_add($block_s{$dev}{"queue_blk_$dir"}, $nr_sector);
+    num_add($block_s{$dev}{"queue_blk_c"}, $nr_sector);
+    num_add($block_s{$dev}{"queue_io_$dir"}, 1);
+    num_add($block_s{$dev}{"queue_io_c"}, 1);
+    pr_warn("add_io: unknown dir ($dir)") if ($dir =~ /^r/ and $dir =~ /^w/);
+}
+
 # Collect completed blocks and IO/s
 sub add_io(@)
 {
@@ -1827,19 +1844,39 @@ EOF
 	    tv64_str($elapse);
     }
 
-    # Summary IO
+    # Summary IO (Queue)
+    print $log <<"EOF";
+
+                      IO (Queue)
+-----------------------------------------------------------------
+  Dev    Direction     MB/s     Total(MB)         IO/s     Total(IO)
+EOF
+    foreach my $dev (@devs) {
+	foreach my $dir ("r", "rm", "w", "wm", "c") {
+	    my $total_blk = $block_s{$dev}{"queue_blk_$dir"} || 0;
+	    my $total_io = $block_s{$dev}{"queue_io_$dir"} || 0;
+	    my $total_mb = ($total_blk * 512) / (1024 * 1024);
+	    printf $log " %4s   %10s %8.2f      %8.2f     %8.2f      %8u\n",
+		kdevname($dev), $DIR_LONGNAME{$dir},
+		$total_mb / to_float_tv64($elapse),
+		$total_mb, $total_io / to_float_tv64($elapse),
+		$total_io;
+	}
+    }
+
+    # Summary IO (Complete)
     print $log <<"EOF";
 
                       IO (Complete)
 -----------------------------------------------------------------
-  Dev  Direction     MB/s     Total(MB)         IO/s     Total(IO)
+  Dev    Direction     MB/s     Total(MB)         IO/s     Total(IO)
 EOF
     foreach my $dev (@devs) {
 	foreach my $dir ("r", "w", "c") {
 	    my $total_blk = $result{$dev}{"total_blk_$dir"};
 	    my $total_io = $result{$dev}{"total_io_$dir"};
 	    my $total_mb = ($total_blk * 512) / (1024 * 1024);
-	    printf $log " %4s   %8s %8.2f      %8.2f     %8.2f      %8u\n",
+	    printf $log " %4s   %10s %8.2f      %8.2f     %8.2f      %8u\n",
 		kdevname($dev), $DIR_LONGNAME{$dir},
 		$total_mb / to_float_tv64($elapse),
 		$total_mb, $total_io / to_float_tv64($elapse),
@@ -2170,6 +2207,7 @@ sub block::block_bio_queue
 	if ($nr_sector) {
 	    add_bno($rwbs_flags, @_);
 	    add_req("queue", $rwbs_flags, @_);
+	    add_queue_io($rwbs_flags, @_);
 	}
 	add_queue_pending($rwbs_flags, @_);
     } else {

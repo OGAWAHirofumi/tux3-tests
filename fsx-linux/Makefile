@@ -27,7 +27,7 @@ GENERATE_SOURCE =
 all: $(TARGET)
 
 FORCE:
-#	make -C lib
+#	$(MAKE) -C lib
 
 $(TARGET): FORCE $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(OBJS) $(LIBS)

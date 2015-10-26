@@ -11,12 +11,12 @@ STRIP	= -s
 
 all:
 	# build fsx-linux
-	make -C fsx-linux all
+	$(MAKE) -C fsx-linux all
 	$(INSTALL) -c -m 755 -d $(TEST_BIN)
 	$(INSTALL) $(STRIP) -m 755 fsx-linux/fsx-linux $(TEST_BIN)
 
 	# build fsstress
-	make -C fsstress all
+	$(MAKE) -C fsstress all
 	$(INSTALL) -c -m 755 -d $(TEST_BIN)
 	$(INSTALL) $(STRIP) -m 755 fsstress/fsstress $(TEST_BIN)
 
@@ -25,5 +25,5 @@ all:
 
 clean:
 	rm -rf $(TEST_TAR) $(TEST_BIN)
-	make -C fsx-linux clean
-	make -C fsstress clean
+	$(MAKE) -C fsx-linux clean
+	$(MAKE) -C fsstress clean

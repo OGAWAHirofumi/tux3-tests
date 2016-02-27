@@ -2909,7 +2909,9 @@ sub count_switch($$$$)
 
     # If switching from swapper, ignore
     if ($pid != 0) {
-	num_add($sched_s{$pid}{$type}, 1);
+	if (is_interesting_pid($pid)) {
+	    num_add($sched_s{$pid}{$type}, 1);
+	}
 
 	my $cid = to_cid($cpu);
 	num_add($sched_s{$cid}{$type}, 1);

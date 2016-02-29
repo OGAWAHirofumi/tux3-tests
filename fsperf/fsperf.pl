@@ -45,6 +45,7 @@ use warnings;
 use Math::BigInt try => 'GMP';
 use Getopt::Long;
 use Cwd;
+use File::Copy;
 
 # If there are many processes, we open sched_*.dat for each process.
 # So, this can be the cause of EMFILE.
@@ -57,6 +58,7 @@ use FileCache;
 my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state);
 
 my $perf_sched_data = "perf-sched.data";
+my $perf_sched_kallsyms = "perf-sched.kallsyms";
 my $perf_block_data = "perf-block.data";
 my $perf_block_map = "perf-block.map";
 my $output_dir = "fsperf-output";
@@ -72,6 +74,8 @@ my $opt_seek_relative = 0;
 my $opt_no_sched = 0;
 # --call-graph option for sched events
 my $opt_call_graph = undef;
+# Read kallsyms from specified file
+my $opt_kallsyms = $perf_sched_kallsyms;
 # Only re-plot graph
 my $opt_graph_only = 0;
 # Print kallsyms
@@ -333,51 +337,63 @@ sub kallsyms_load($)
 {
     my $data = shift;
 
-    if ($kallsyms_loaded == 0) {
-	my $re_addr = "[0-9a-fA-F]";
-	my $re_addr8 = $re_addr . "{8}";
-	my $re_addr16 = $re_addr . "{16}";
+    my $re_addr = "[0-9a-fA-F]";
+    my $re_addr8 = $re_addr . "{8}";
+    my $re_addr16 = $re_addr . "{16}";
 
-	# No way to dump kallsyms by perf, so use "strings"
-	open(my $fh, "-|", "strings $data") or die "Couldn't run `strings': $!";
+    # No way to dump kallsyms by perf, so use "strings"
+    open(my $fh, "-|", "strings $data") or die "Couldn't run `strings': $!";
 
-	my $last = -1;
-	my $need_sort = 0;
-	while (<$fh>) {
-	    if (m!^($re_addr8|$re_addr16) (\S) (\S+)(\s+\[(.*)\])?$!) {
-		my $addr = Math::BigInt->from_hex($1);
-		my $sym_type = $2;
-		my $sym = $3;
-		my $mod = $5 || "";
+    my $last = -1;
+    my $need_sort = 0;
+    while (<$fh>) {
+	if (m!^($re_addr8|$re_addr16) (\S) (\S+)(\s+\[(.*)\])?$!) {
+	    my $addr = Math::BigInt->from_hex($1);
+	    my $sym_type = $2;
+	    my $sym = $3;
+	    my $mod = $5 || "";
 
-		print $_ if ($opt_print_kallsyms);
+	    print "[$data]" . $_ if ($opt_print_kallsyms);
 
-		my %m = (
-			 addr => $addr,
-			 type => $sym_type,
-			 sym => $sym,
-			 mod => $mod,
-			);
+	    my %m = (
+		     addr => $addr,
+		     type => $sym_type,
+		     sym => $sym,
+		     mod => $mod,
+		    );
 
-		push(@kallsyms, \%m);
+	    push(@kallsyms, \%m);
 
-		if ($last > $addr) {
-		    $need_sort = 1;
-		}
-		$last = $addr;
+	    if ($last > $addr) {
+		$need_sort = 1;
 	    }
+	    $last = $addr;
 	}
+    }
 
-	close($fh);
+    close($fh);
 
-	$need_sort = 1;
-	if ($need_sort) {
-	    @kallsyms = sort { $a->{addr} <=> $b->{addr} } @kallsyms;
+    $need_sort = 1;
+    if ($need_sort) {
+	@kallsyms = sort { $a->{addr} <=> $b->{addr} } @kallsyms;
+    }
+#    foreach my $m (@kallsyms) {
+#	printf "%#x, %s, %s, %s\n",
+#	    $m->{addr}, $m->{type}, $m->{sym}, $m->{mod};
+#    }
+}
+
+sub kallsyms_load_all()
+{
+    if ($kallsyms_loaded == 0) {
+	# Read from kallsyms embedded in perf.data (that older perf had)
+	kallsyms_load($perf_sched_data);
+
+	# If no embedded kallsyms, try to read from $opt_kallsyms
+	if (!scalar(@kallsyms)) {
+	    print "Trying read symbols from \"$opt_kallsyms\"\n";
+	    kallsyms_load($opt_kallsyms);
 	}
-#	foreach my $m (@kallsyms) {
-#	    printf "%#x, %s, %s, %s\n",
-#		$m->{addr}, $m->{type}, $m->{sym}, $m->{mod};
-#	}
     }
 
     $kallsyms_loaded = 1;
@@ -388,7 +404,7 @@ sub kallsyms_find_by_addr($)
 {
     my $addr = shift;
 
-    kallsyms_load($perf_sched_data);
+    kallsyms_load_all();
 
     if (!scalar(@kallsyms)) {
 	# If not found, return address
@@ -3456,6 +3472,7 @@ sub trace_begin
     $opt_no_error = $ENV{FSPERF_NO_ERROR};
     $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
     $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
+    $opt_kallsyms = $ENV{FSPERF_KALLSYMS};
     $opt_debug_event = $ENV{FSPERF_DEBUG_EVENT};
 
     read_devmap();
@@ -3675,6 +3692,12 @@ sub get_device_kdev(@)
     return @kdevs;
 }
 
+sub copy_kallsyms
+{
+    # kallsyms is not necessary to work, ignore error
+    copy("/proc/kallsyms", $perf_sched_kallsyms);
+}
+
 sub run_record
 {
     my @kdevs = @_;
@@ -3758,6 +3781,9 @@ sub run_record
     push(@cmd, "--");
 
     if (not $opt_no_sched) {
+	# Copy kallsyms for using later
+	copy_kallsyms();
+
 	# Make sched events cmdline
 	push(@cmd, "perf", "record", "-a", "-c1", "-o", $perf_sched_data);
 	if (defined($opt_call_graph)) {
@@ -3831,6 +3857,7 @@ sub cmd_report
 			 "work-id=i"		=> \@opt_work_id,
 			 "seek-threshold=i"	=> \$opt_seek_threshold,
 			 "relative-seek"	=> \$opt_seek_relative,
+			 "kallsyms=s"		=> \$opt_kallsyms,
 			 "no-error"		=> \$opt_no_error,
 			 "no-sched"		=> \$opt_no_sched,
 			 "graph-only"		=> \$opt_graph_only,
@@ -3857,6 +3884,7 @@ sub cmd_report
     $ENV{FSPERF_NO_ERROR} = $opt_no_error;
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;
+    $ENV{FSPERF_KALLSYMS} = $opt_kallsyms;
     $ENV{FSPERF_DEBUG_EVENT} = $opt_debug_event;
 
     run_cmd();
@@ -3865,7 +3893,7 @@ sub cmd_report
 sub cmd_kallsyms
 {
     $opt_print_kallsyms = 1;
-    kallsyms_load($perf_sched_data);
+    kallsyms_load_all();
     exit(0);
 }
 

@@ -449,6 +449,12 @@ sub kallsyms_find_by_addr($)
 # plot
 #
 
+# Using linetype color for reqsz
+my $R_Q_COLOR	= 1;	# read queue
+my $W_Q_COLOR	= 2;	# write queue
+my $R_C_COLOR	= 10;	# read complete
+my $W_C_COLOR	= 11;	# write complete
+
 # Using linetype color for state
 my $R_COLOR	= 30;	# TASK_RUNNING color
 my $W_COLOR	= 31;	# cpu wait color
@@ -478,7 +484,7 @@ if ((GPVAL_VERSION < 4.5) || \\
    (!strstrt(GPVAL_COMPILE_OPTIONS,"+USER_LINETYPES"))) \\
    exit
 
-# For block
+# For block and reqsz
 set linetype  1 linecolor rgb "royalblue" pointtype 1
 set linetype  2 linecolor rgb "dark-cyan" pointtype 1
 set linetype  3 linecolor rgb "dark-turquoise" pointtype 1
@@ -583,6 +589,7 @@ sub output_plot_summary($$)
 		   fname_plot_bno($dev),
 		   fname_plot_mbps($dev),
 		   fname_plot_iops($dev),
+		   fname_plot_reqsz($dev),
 		   fname_plot_qdepth($dev),
 		   fname_plot_lat_q2c($dev, "c"),
 		   fname_plot_lat_d2c($dev, "c"),
@@ -841,6 +848,52 @@ sub output_plot_iops($)
     print $fh <<"EOF";
 '$datafile' using 1:2 title "I/O" with lines
 EOF
+
+    output_plot_post($fh);
+
+    close_file($fh);
+}
+
+sub fname_plot_reqsz($)
+{
+    my $dev = shift;
+    return sprintf("%s_plot_reqsz.gp", kdevname($dev));
+}
+
+sub output_plot_reqsz($)
+{
+    my $dev = shift;
+    my $fname = fname_plot_reqsz($dev);
+
+    my $fh = open_file($fname, 0755);
+
+    output_plot_pre($fh, "Request Size",
+		    "Time (secs)", "Request size (byte)",
+		    "set format y '%.1s %cB'",
+		    "set pointsize 0.5",
+		    "",
+		    "to_byte(blk) = (blk * 512)");
+
+    my @info_reqsz =
+	({ type => "queue", dir => "r", color => $R_Q_COLOR },
+	 { type => "queue", dir => "w", color => $W_Q_COLOR },
+	 { type => "complete", dir => "r", color => $R_C_COLOR },
+	 { type => "complete", dir => "w", color => $W_C_COLOR },);
+    my $first = 1;
+    foreach my $i (@info_reqsz) {
+	my $type = $i->{type};
+	my $dir = $i->{dir};
+	my $color = $i->{color};
+	my $datafile = sprintf("%s_reqsz_%s_%s.dat", kdevname($dev),
+			       lc($type), $dir);
+
+	print $fh ", \\\n" if (not $first);
+	$first = 0;
+
+	print $fh
+	    "'$datafile' using 1:(to_byte(\$2)) title \"$DIR_LONGNAME{$dir} $type\" with points linetype ${color}";
+    }
+    print $fh "\n";
 
     output_plot_post($fh);
 
@@ -1320,6 +1373,13 @@ sub add_req(@)
     num_max($block_s{$dev}{"req_max"}{$key}, $nr_sector);
     # Remember minimum sectors on single request
     num_min($block_s{$dev}{"req_min"}{$key}, $nr_sector);
+
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
+    my $fname = sprintf("reqsz_%s_%s", lc($key), $dir);
+    # Create file if need
+    my $fh = open_dev_datfile($dev, $fname);
+    # Output request size per read or write
+    print $fh time_str($common_secs, $common_nsecs), " $nr_sector\n";
 }
 
 # Update queue depth
@@ -1945,6 +2005,9 @@ EOF
 	    printf $log " %4s  %8s %8u %8.2f  %5u  %5u\n",
 		kdevname($dev), $type, $req_nr, $avg, $req_min, $req_max;
 	}
+
+	# Create plot script
+	output_plot_reqsz($dev);
     }
 
     # Summary Merged Request
@@ -3837,6 +3900,8 @@ Options:
  -r, --relative-seek          Calculate seek relative distance. I.e. if next
                               access is before last access, use start of last
                               access. Otherwise, use end of last access.
+ -k, --kallsyms=PATH          Read kallsyms from specified path.
+                              (default $perf_sched_kallsyms)
  --no-error                   Don't exit even if sanity check found error.
  --no-sched                   Don't run sched events
  --graph-only                 Run re-plot graph only

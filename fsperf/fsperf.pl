@@ -74,6 +74,8 @@ my $opt_seek_relative = 0;
 my $opt_no_sched = 0;
 # --call-graph option for sched events
 my $opt_call_graph = undef;
+# Use sched_switch instead of sched_stat_*
+my $opt_use_sched_switch = 0;
 # Read kallsyms from specified file
 my $opt_kallsyms = $perf_sched_kallsyms;
 # Only re-plot graph
@@ -2764,6 +2766,7 @@ sub sched_stat_process
     }
 }
 
+# Collect pid/wid time based on sched_stat_*
 sub sched_stat($$$$$)
 {
     my $type = shift;
@@ -2790,6 +2793,35 @@ sub sched_stat($$$$$)
 
 	# Add stat as workqueue work
 	sched_stat_process($type, $wid, $sym, $end, $end - $start);
+    }
+}
+
+# Collect pid/wid time based on sched_switch
+sub sched_stat_on_switch($$$$)
+{
+    my $prev_type = shift;
+    my $prev_pid = shift;
+    my $next_pid = shift;
+    my $time = shift;
+
+    # Ignore swapper
+    if ($prev_pid != 0) {
+	# Running prev_pid switched to next_pid
+	if ($switch_state{$prev_pid}{time}) {
+	    my $state = $switch_state{$prev_pid}{state};
+	    my $prev = $switch_state{$prev_pid}{time};
+	    my $comm = $switch_state{$prev_pid}{comm};
+	    sched_stat("R", $prev_pid, $comm, $time, $time - $prev);
+	}
+    }
+    if ($next_pid != 0) {
+	# Sleeping next_pid switched from prev_pid
+	if ($switch_state{$next_pid}{time}) {
+	    my $state = $switch_state{$next_pid}{state};
+	    my $prev = $switch_state{$next_pid}{time};
+	    my $comm = $switch_state{$next_pid}{comm};
+	    sched_stat($state, $next_pid, $comm, $time, $time - $prev);
+	}
     }
 }
 
@@ -2833,7 +2865,7 @@ sub sched::sched_stat_runtime
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($runtime) {
+    if ($opt_use_sched_switch == 0 and $runtime) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("R", $pid, $comm, $time, $runtime);
     }
@@ -2848,7 +2880,7 @@ sub sched::sched_stat_blocked
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($delay) {
+    if ($opt_use_sched_switch == 0 and $delay) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("D", $pid, $comm, $time, $delay);
     }
@@ -2873,7 +2905,7 @@ sub sched::sched_stat_sleep
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($delay) {
+    if ($opt_use_sched_switch == 0 and $delay) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("S", $pid, $comm, $time, $delay);
     }
@@ -2888,21 +2920,26 @@ sub sched::sched_stat_wait
 
     update_cur_time($common_secs, $common_nsecs);
 
-    if ($delay) {
+    if ($opt_use_sched_switch == 0 and $delay) {
 	my $time = to_tv64($common_secs, $common_nsecs);
 	sched_stat("W", $pid, $comm, $time, $delay);
     }
 }
 
-#sub sched::sched_process_exec
-#{
-#    debug_event(@_) if ($opt_debug_event);
-#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	$common_pid, $common_comm,
-#	$filename, $pid, $old_pid) = @_;
-#
-#    update_cur_time($common_secs, $common_nsecs);
-#}
+sub sched::sched_process_exec
+{
+    debug_event(@_) if ($opt_debug_event);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm,
+	$filename, $pid, $old_pid) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+
+    # Update comm
+    if ($switch_state{$old_pid}{comm}) {
+	$switch_state{$old_pid}{comm} = $common_comm;
+    }
+}
 
 #sub sched::sched_process_fork
 #{
@@ -3026,6 +3063,10 @@ sub sched::sched_switch
 	$prev_type = "R";
 	$voluntary = "involuntary";
     }
+    if ($opt_use_sched_switch) {
+	# Per pid stat if need
+	sched_stat_on_switch($prev_type, $prev_pid, $next_pid, $time);
+    }
     if ($voluntary) {
 	remember_switch($prev_type, $prev_pid, $prev_comm, $time);
 	count_switch($voluntary, $common_cpu, $prev_pid, $time);
@@ -3131,6 +3172,8 @@ EOF
 	my $voluntary_s = $sched_s{$id}{"voluntary-S"} || 0;
 	my $voluntary_d = $sched_s{$id}{"voluntary-D"} || 0;
 	my $involuntary = $sched_s{$id}{"involuntary"} || 0;
+	my $sched_type =
+	    $opt_use_sched_switch ? "sched_switch" : "sched_stat_*";
 	my $elapse;
 
 	if (defined(is_cpu($id))) {
@@ -3158,7 +3201,7 @@ EOF
 	    if ($pid_header) {
 		print $log <<"EOF";
 ----------------------------------------------------------
-                        Process (Based on sched_stat_*)
+                        Process (Based on $sched_type)
 EOF
 		$pid_header = 0;
 	    }
@@ -3176,7 +3219,7 @@ EOF
 	    if ($wid_header) {
 		print $log <<"EOF";
 ----------------------------------------------------------
-                        Workqueue work (Based on sched_stat_*)
+                        Workqueue work (Based on $sched_type)
 EOF
 		$wid_header = 0;
 	    }
@@ -3536,6 +3579,7 @@ sub trace_begin
     $opt_seek_threshold = $ENV{FSPERF_SEEK_THRESHOLD};
     $opt_seek_relative = $ENV{FSPERF_SEEK_RELATIVE};
     $opt_kallsyms = $ENV{FSPERF_KALLSYMS};
+    $opt_use_sched_switch = $ENV{FSPERF_USE_SCHED_SWITCH};
     $opt_debug_event = $ENV{FSPERF_DEBUG_EVENT};
 
     read_devmap();
@@ -3902,6 +3946,9 @@ Options:
                               access. Otherwise, use end of last access.
  -k, --kallsyms=PATH          Read kallsyms from specified path.
                               (default $perf_sched_kallsyms)
+ --use-sched_switch           Use sched_switch instead of sched_stat_*
+                              (sched_stat_* requires CONFIG_SCHEDSTATS.
+                               Without SCHEDSTATS, no way to see details.)
  --no-error                   Don't exit even if sanity check found error.
  --no-sched                   Don't run sched events
  --graph-only                 Run re-plot graph only
@@ -3923,6 +3970,7 @@ sub cmd_report
 			 "seek-threshold=i"	=> \$opt_seek_threshold,
 			 "relative-seek"	=> \$opt_seek_relative,
 			 "kallsyms=s"		=> \$opt_kallsyms,
+			 "use-sched_switch"	=> \$opt_use_sched_switch,
 			 "no-error"		=> \$opt_no_error,
 			 "no-sched"		=> \$opt_no_sched,
 			 "graph-only"		=> \$opt_graph_only,
@@ -3950,6 +3998,7 @@ sub cmd_report
     $ENV{FSPERF_SEEK_THRESHOLD} = $opt_seek_threshold;
     $ENV{FSPERF_SEEK_RELATIVE} = $opt_seek_relative;
     $ENV{FSPERF_KALLSYMS} = $opt_kallsyms;
+    $ENV{FSPERF_USE_SCHED_SWITCH} = $opt_use_sched_switch;
     $ENV{FSPERF_DEBUG_EVENT} = $opt_debug_event;
 
     run_cmd();

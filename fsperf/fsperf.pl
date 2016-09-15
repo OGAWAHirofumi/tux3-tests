@@ -64,26 +64,35 @@ my $perf_block_map = "perf-block.map";
 my $output_dir = "fsperf-output";
 my $debug_event_fname = "fsperf-debug.pl";
 
+#
+# Options inherit to child process
+#
 # Don't exit even if sanity check found error
 my $opt_no_error = 0;
 # less than this seek distance will be ignore
 my $opt_seek_threshold = 0;
 # 0: absolute distance, 1: relative distance
 my $opt_seek_relative = 0;
-# Don't run sched events
-my $opt_no_sched = 0;
-# --call-graph option for sched events
-my $opt_call_graph = undef;
-# Use sched_switch instead of sched_stat_*
-my $opt_use_sched_switch = 0;
 # Read kallsyms from specified file
 my $opt_kallsyms = $perf_sched_kallsyms;
+# Use sched_switch instead of sched_stat_*
+my $opt_use_sched_switch = 0;
+# Debugging for perf event
+my $opt_debug_event = 0;
+
+#
+# Options not inherit to child process
+#
+# --call-graph option for sched events
+my $opt_call_graph = undef;
+# Don't run block events
+my $opt_no_block = 0;
+# Don't run sched events
+my $opt_no_sched = 0;
 # Only re-plot graph
 my $opt_graph_only = 0;
 # Print kallsyms
 my $opt_print_kallsyms = 0;
-# Debugging for perf event
-my $opt_debug_event = 0;
 
 my @opt_target_pid = ();
 my @opt_target_wid = ();
@@ -3288,6 +3297,15 @@ EOF
 #    }
 }
 
+sub sched_only_main
+{
+    # Calc start and end time
+    calc_start_end_time();
+    $ENV{FSPERF_XSTART} = $perf_xstart;
+    $ENV{FSPERF_XEND} = $perf_xend;
+
+    sched_main();
+}
 
 ##################################
 #
@@ -3549,20 +3567,32 @@ my %mode_table = (
 					    data => undef,
 					   },
 
-		  # For $opt_no_sched
+		  # For $opt_no_block
 		  FSPERF_MODE_REPORT2	=> {
 					    func => undef,
-					    next => "FSPERF_MODE_BLOCK2",
-					    data => $perf_block_data,
+					    next => "FSPERF_MODE_SCHED2",
+					    data => $perf_sched_data,
 					   },
-		  FSPERF_MODE_BLOCK2	=> {
-					    func => \&block_main,
-					    next => "FSPERF_MODE_GRAPH",
+		  FSPERF_MODE_SCHED2	=> {
+					    func => \&sched_only_main,
+					    next => undef,
 					    data => undef,
 					   },
 
 		  # For $opt_no_sched
 		  FSPERF_MODE_REPORT3	=> {
+					    func => undef,
+					    next => "FSPERF_MODE_BLOCK3",
+					    data => $perf_block_data,
+					   },
+		  FSPERF_MODE_BLOCK3	=> {
+					    func => \&block_main,
+					    next => "FSPERF_MODE_GRAPH",
+					    data => undef,
+					   },
+
+		  # For $opt_graph_only
+		  FSPERF_MODE_REPORT4	=> {
 					    func => \&graph_only_main,
 					    next => "FSPERF_MODE_GRAPH",
 					    data => undef,
@@ -3655,6 +3685,7 @@ Options:
  <cmdline>...		 Any command you can specify in a shell.
  -d, --device=DEV        Record events only for DEV.
                          Accepts multiple times (e.g. -d /dev/sda -d /dev/sdb)
+ --no-block              Don't run block events
  --no-sched              Don't run sched events
  -g, --call-graph=MODE   pass --call-graph option to sched events
  -h, --help              This help.
@@ -3874,18 +3905,21 @@ sub run_record
     #         perf record -a -c1 -g -o perf-sched.data -e 'sched:*' -- \
     #         dd if=/mnt/file of=/dev/null bs=4K
 
+    my @cmd;
     # Make block events cmdline
-    my @cmd = ("perf", "record", "-a", "-c1", "-o", $perf_block_data);
-    foreach my $event (sort(keys(%block_events))) {
-	push(@cmd, "-e", $event);
-	# Add filter
-	if ($block_events{$event} && @kdevs) {
-	    my $filter_type = $block_events{$event};
-	    my $filter = make_filter_str($filter_type, @kdevs);
-	    push(@cmd, "--filter", $filter);
+    if (not $opt_no_block) {
+	@cmd = ("perf", "record", "-a", "-c1", "-o", $perf_block_data);
+	foreach my $event (sort(keys(%block_events))) {
+	    push(@cmd, "-e", $event);
+	    # Add filter
+	    if ($block_events{$event} && @kdevs) {
+		my $filter_type = $block_events{$event};
+		my $filter = make_filter_str($filter_type, @kdevs);
+		push(@cmd, "--filter", $filter);
+	    }
 	}
+	push(@cmd, "--");
     }
-    push(@cmd, "--");
 
     if (not $opt_no_sched) {
 	# Copy kallsyms for using later
@@ -3918,6 +3952,7 @@ sub cmd_record
 
     my $ret = GetOptions(
 			 "device=s"		=> \@opt_device,
+			 "no-block"		=> \$opt_no_block,
 			 "no-sched"		=> \$opt_no_sched,
 			 "g|call-graph:s"	=> \$opt_call_graph,
 			 "help"			=> \$help,
@@ -3950,6 +3985,7 @@ Options:
                               (sched_stat_* requires CONFIG_SCHEDSTATS.
                                Without SCHEDSTATS, no way to see details.)
  --no-error                   Don't exit even if sanity check found error.
+ --no-block                   Don't run block events
  --no-sched                   Don't run sched events
  --graph-only                 Run re-plot graph only
  --debug-event                Logging all perf event to log
@@ -3972,6 +4008,7 @@ sub cmd_report
 			 "kallsyms=s"		=> \$opt_kallsyms,
 			 "use-sched_switch"	=> \$opt_use_sched_switch,
 			 "no-error"		=> \$opt_no_error,
+			 "no-block"		=> \$opt_no_block,
 			 "no-sched"		=> \$opt_no_sched,
 			 "graph-only"		=> \$opt_graph_only,
 			 "debug-event"		=> \$opt_debug_event,
@@ -3985,8 +4022,10 @@ sub cmd_report
 
     # Pass parameters as environment variables
     if ($opt_graph_only) {
-	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT3";
+	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT4";
     } elsif ($opt_no_sched) {
+	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT3";
+    } elsif ($opt_no_block) {
 	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT2";
     } else {
 	$ENV{FSPERF_MODE} = "FSPERF_MODE_REPORT";

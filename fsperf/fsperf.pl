@@ -3836,6 +3836,23 @@ sub copy_kallsyms
     copy("/proc/kallsyms", $perf_sched_kallsyms);
 }
 
+# Check "sched_schedstats" for scheduler stats.
+# If sched_schedstats==0, sched_stat_* event can't work.
+sub check_schedstats
+{
+    my $schedstats = "/proc/sys/kernel/sched_schedstats";
+    if (-r $schedstats) {
+	if (open(my $fh, "<", $schedstats)) {
+	    my $val = <$fh>;
+	    chomp $val;
+	    close($fh);
+	    if ($val eq "0") {
+		pr_warn("For details of scheduler, echo 1 > $schedstats");
+	    }
+	}
+    }
+}
+
 sub run_record
 {
     my @kdevs = @_;
@@ -3922,6 +3939,8 @@ sub run_record
     }
 
     if (not $opt_no_sched) {
+	# Check sched_schedstats
+	check_schedstats
 	# Copy kallsyms for using later
 	copy_kallsyms();
 

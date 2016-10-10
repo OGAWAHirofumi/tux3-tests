@@ -2719,6 +2719,42 @@ use constant TASK_WAKEKILL		=> 128;
 use constant TASK_WAKING		=> 256;
 use constant TASK_PARKED		=> 512;
 
+use constant PLOT_SCHED_FULL		=> 1;
+use constant PLOT_SCHED_SUMMARY		=> 2;
+use constant PLOT_SCHED_SUMMARY_KEY	=> 4;
+
+sub fname_plot_sched_summary_key_pos()
+{
+    return ".key_pos.gp";
+}
+
+sub output_plot_sched_summary_key()
+{
+    my $fh;
+
+    # Output compat code to adjust key position
+    my $fname_key_pos = fname_plot_sched_summary_key_pos();
+    $fh = open_file($fname_key_pos, 0644);
+    print $fh <<"EOF";
+# key position for sched_summary
+if (GPVAL_VERSION < 5.0) {
+exit
+} else {
+set key right center
+}
+EOF
+    close_file($fh);
+
+    my $dummy_dat = "dummy";
+    # Output dummy data to plot sample keys (gnuplot discards key if no data)
+    foreach my $type (@sched_types) {
+	sched_output_time($type, $dummy_dat, $perf_start, $perf_start + 1);
+    }
+
+    # Output to plot sample keys for summary
+    output_plot_sched_raw($dummy_dat, "", PLOT_SCHED_SUMMARY_KEY);
+}
+
 sub fname_plot_sched_summary()
 {
     return "sched_summary.gp";
@@ -2727,14 +2763,20 @@ sub fname_plot_sched_summary()
 sub output_plot_sched_summary_pre($)
 {
     my $nr_plots = shift;
-    my $fname_summary = fname_plot_sched_summary();
-    my $fh = open_file($fname_summary, 0755);
 
+    # Reserve area for key samples
+    $nr_plots++;
+
+    # Output summay header
     my $height = 5 * $sched_total_height * $nr_plots;
     my $width = summary_image_width();
     my $fontscale = 0.8;
 
-    print $fh <<"EOF"
+    my $fname_key_pos = fname_plot_sched_summary_key_pos();
+    my $fname_summary = fname_plot_sched_summary();
+    my $fh = open_file($fname_summary, 0755);
+
+    print $fh <<"EOF";
 #!/usr/bin/gnuplot
 
 set term png truecolor size ${width},${height} fontscale ${fontscale}
@@ -2743,8 +2785,12 @@ set tmargin 0
 set bmargin 0
 set multiplot layout ${nr_plots},1 columnsfirst scale 1.0,1.0 offset 0.0,0.0
 unset xtics
+load "${fname_key_pos}"
 
 EOF
+
+    # Output data for key samples
+    output_plot_sched_summary_key();
 }
 
 sub output_plot_sched_summary()
@@ -2773,101 +2819,127 @@ sub fname_plot_sched($)
     return "sched_$id.gp";
 }
 
+sub output_plot_sched_raw($$$)
+{
+    my $id = shift;
+    my $comm = shift;
+    my $plot_type = shift;
+
+    my $datafile_time = "sched_${id}_time.dat";
+    my $datafile_stat = "sched_${id}_stat.dat";
+    my $ylow = -0.4;
+    my $ylen = 0.025;
+    my ($fh, $title, $xlabel, $ylabel, $ymin, $ymax, $custom);
+
+    if ($plot_type == PLOT_SCHED_FULL) {
+	my $fname = fname_plot_sched($id);
+	my $type = is_wid($id) ? "Workqueue" : "Task";
+	# sched_*-*.gp
+	$fh = open_file($fname, 0755);
+	$title = "$type $id ($comm) Schedule";
+	$xlabel = "Time (secs)";
+	$ylabel = "Schedule Time (secs)";
+	$ymin = $ylow - 0.1;
+	$ymax = 1.1;
+    } else {
+	my $fname_summary = fname_plot_sched_summary();
+	# sched_summary.gp
+	$fh = open_file($fname_summary, 0755);
+	$title = undef;
+	$ylabel = undef;
+	# yrange cuts only @sched_tpes bars area
+	$ymin = $ylow;
+	$ymax = $ylow + $ylen * $sched_total_height;
+
+	my ($xlabel_name, $border);
+	if ($plot_type == PLOT_SCHED_SUMMARY) {
+	    $xlabel_name = "$id ($comm)";
+	    $border = "";
+	} else { # PLOT_SCHED_SUMMARY_KEY
+	    $xlabel_name = "";
+	    $border = " 0";
+	}
+	$custom = "set xlabel \"$xlabel_name\" offset 0,1.5\n"
+	    . "set border${border}";
+    }
+
+    output_plot_pre($fh, $title, $xlabel, $ylabel,
+		    "set yrange [$ymin:$ymax]",
+		    "set ytics 0,0.1,1",
+		    "set style fill transparent solid 0.75 noborder",
+		    "set datafile missing '$plot_missing_char'",
+		    "",
+		    "ylow = $ylow",
+		    "ylen = $ylen",
+		    $custom);
+
+    my $need_comma = 0;
+    if ($plot_type == PLOT_SCHED_FULL) {
+	# Line graph
+	foreach my $type (@sched_types) {
+	    my $info = $sched_graph_info{$type};
+	    my $col = $info->{col};
+	    my $name = $info->{name};
+	    my $color = $info->{color};
+
+	    print $fh ", \\\n" if ($need_comma);
+	    print $fh "'$datafile_stat' using 1:${col} title \"${name}\" with lines linetype ${color}";
+
+	    $need_comma = 1;
+	}
+    }
+
+    # Bars
+    my $base = ($plot_type == PLOT_SCHED_FULL) ? 7 : 0;
+    my $ypos_h = $base + $sched_total_height;
+    foreach my $type (@sched_types) {
+	my $info = $sched_graph_info{$type};
+	my $col = $info->{col};
+	my $name = $info->{name};
+	my $color = $info->{color};
+	my $ypos_l = $ypos_h - $info->{height};
+
+	my $bar_title;
+	if ($plot_type == PLOT_SCHED_SUMMARY_KEY) {
+	    $bar_title = "title \"${name}\"";
+	} else {
+	    $bar_title = "notitle";
+	}
+
+	# For bar each schedule type
+	if ($need_comma) {
+	    print $fh ", \\\n";
+	}
+	print $fh
+	    "'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * ${ypos_l}):(ylow + ylen * ${ypos_h}) ${bar_title} with boxxyerrorbars linetype ${color}";
+	if ($plot_type == PLOT_SCHED_FULL) {
+	    # For bar of combined schedule type
+	    print $fh ", \\\n";
+	    print $fh
+		"'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * 0):(ylow + ylen * 5) notitle with boxxyerrorbars linetype ${color}";
+	}
+
+	$ypos_h = $ypos_l;
+	$need_comma = 1;
+    }
+    print $fh "\n";
+
+    if ($plot_type == PLOT_SCHED_FULL) {
+	output_plot_post($fh);
+	close_file($fh);
+    } else {
+	print $fh "\n";
+    }
+}
+
 # Output sched_*-*.gp and sched_summary.gp
 sub output_plot_sched($$)
 {
     my $id = shift;
     my $comm = shift;
-    my $fname = fname_plot_sched($id);
-    my $fname_summary = fname_plot_sched_summary();
-    my $datafile_time = "sched_${id}_time.dat";
-    my $datafile_stat = "sched_${id}_stat.dat";
 
-    foreach my $n (0 .. 1) {
-	my $ylow = -0.4;
-	my $ylen = 0.025;
-	my ($fh, $title, $xlabel, $ylabel, $ymin, $ymax, $custom);
-
-	if ($n == 0) {
-	    my $type = is_wid($id) ? "Workqueue" : "Task";
-	    # sched_*-*.gp
-	    $fh = open_file($fname, 0755);
-	    $title = "$type $id ($comm) Schedule";
-	    $xlabel = "Time (secs)";
-	    $ylabel = "Schedule Time (secs)";
-	    $ymin = $ylow - 0.1;
-	    $ymax = 1.1;
-	} else {
-	    # sched_summary.gp
-	    $fh = open_file($fname_summary, 0755);
-	    $title = undef;
-	    $ylabel = undef;
-	    # yrange cuts only @sched_tpes bars area
-	    $ymin = $ylow;
-	    $ymax = $ylow + $ylen * $sched_total_height;
-	    $custom = "set xlabel \"$id ($comm)\" offset 0,1.5";
-	}
-
-	output_plot_pre($fh, $title, $xlabel, $ylabel,
-			"set yrange [$ymin:$ymax]",
-			"set ytics 0,0.1,1",
-			"set style fill transparent solid 0.75 noborder",
-			"set datafile missing '$plot_missing_char'",
-			"",
-			"ylow = $ylow",
-			"ylen = $ylen",
-			$custom);
-
-	my $need_comma = 0;
-	if ($n == 0) {
-	    # Line graph
-	    foreach my $type (@sched_types) {
-		my $info = $sched_graph_info{$type};
-		my $col = $info->{col};
-		my $name = $info->{name};
-		my $color = $info->{color};
-
-		print $fh ", \\\n" if ($need_comma);
-		print $fh "'$datafile_stat' using 1:${col} title \"${name}\" with lines linetype ${color}";
-
-		$need_comma = 1;
-	    }
-	}
-
-	# Bars
-	my $base = ($n == 0) ? 7 : 0;
-	my $ypos_h = $base + $sched_total_height;
-	foreach my $type (@sched_types) {
-	    my $info = $sched_graph_info{$type};
-	    my $col = $info->{col};
-	    my $color = $info->{color};
-	    my $ypos_l = $ypos_h - $info->{height};
-
-	    # For bar each schedule type
-	    if ($need_comma) {
-		print $fh ", \\\n";
-	    }
-	    print $fh
-		"'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * ${ypos_l}):(ylow + ylen * ${ypos_h}) notitle with boxxyerrorbars linetype ${color}";
-	    if ($n == 0) {
-		# For bar of combined schedule type
-		print $fh ", \\\n";
-		print $fh
-		    "'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * 0):(ylow + ylen * 5) notitle with boxxyerrorbars linetype ${color}";
-	    }
-
-	    $ypos_h = $ypos_l;
-	    $need_comma = 1;
-	}
-	print $fh "\n";
-
-	if ($n == 0) {
-	    output_plot_post($fh);
-	    close_file($fh);
-	} else {
-	    print $fh "\n";
-	}
-    }
+    output_plot_sched_raw($id, $comm, PLOT_SCHED_FULL);
+    output_plot_sched_raw($id, $comm, PLOT_SCHED_SUMMARY);
 }
 
 sub open_id_datfile($$)
@@ -2888,19 +2960,16 @@ sub is_interesting_pid($)
     return 0;
 }
 
-sub sched_stat_process
+sub sched_output_time($$$$)
 {
     my $type = shift;
     my $id = shift;
-    my $comm = shift;
-    my $time = shift;
-    my $elapse = shift;
+    my $start = shift;
+    my $end = shift;
 
     my $fh = open_id_datfile($id, "time");
 
-    my $start = $time - $elapse;
     my $start_str = tv64_str($start);
-    my $end = $time;
     my $end_str = tv64_str($end);
 
     # Output sched_*_time.dat
@@ -2911,6 +2980,21 @@ sub sched_stat_process
     $cols[$sched_graph_info{$type}{col} - 1] = $end_str;
 
     print $fh "@cols\n";
+}
+
+sub sched_stat_process
+{
+    my $type = shift;
+    my $id = shift;
+    my $comm = shift;
+    my $time = shift;
+    my $elapse = shift;
+
+    my $start = $time - $elapse;
+    my $end = $time;
+
+    # Output sched_*_time.dat
+    sched_output_time($type, $id, $start, $end);
 
     # Remember stat
     $sched_s{$id}{comm} = $comm;

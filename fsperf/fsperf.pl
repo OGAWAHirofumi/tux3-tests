@@ -2780,7 +2780,7 @@ sub sched_stat_process
 	my $cur_start = to_tv64($cur_sec, 0);
 	my $cur_elapse = min($end - $cur_start, $elapse);
 
-	num_add($sched_s{$id}{$type}{sec}[$cur_sec], $cur_elapse);
+	num_add($sched_s{$id}{$type}{sec}{$cur_sec}, $cur_elapse);
 	$elapse -= $cur_elapse;
 
 	$end = $cur_start;
@@ -3285,7 +3285,7 @@ EOF
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
 	    foreach my $type (@sched_types) {
-		my $time_str = tv64_str($sched_s{$id}{$type}{sec}[$idx] || 0);
+		my $time_str = tv64_str($sched_s{$id}{$type}{sec}{$idx} || 0);
 		print $fh " $time_str";
 	    }
 	    print $fh "\n";

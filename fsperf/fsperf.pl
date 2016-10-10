@@ -493,6 +493,15 @@ my $D_COLOR	= 33;	# TASK_UNINTERRUPTIBLE color
 
 my $plot_missing_char = "-";
 
+my @sched_types = ("R", "W", "S", "D");
+my %sched_graph_info =
+    ("R" => { col => 2, height => 1, name => "Running",  color => $R_COLOR },
+     "W" => { col => 3, height => 1, name => "CPU wait", color => $W_COLOR },
+     "S" => { col => 4, height => 1, name => "Sleep",    color => $S_COLOR },
+     "D" => { col => 5, height => 1, name => "Block",    color => $D_COLOR },);
+my $sched_total_height = 0;
+foreach (@sched_types) { $sched_total_height += $sched_graph_info{$_}{height}; }
+
 sub fname_plot_color()
 {
     return ".color.gp";
@@ -544,10 +553,10 @@ set linetype 23 linecolor rgb "khaki" pointtype 4
 set linetype 24 linecolor rgb "goldenrod" pointtype 4
 
 # For schedule
-set linetype 30 linecolor rgb "forest-green"
-set linetype 31 linecolor rgb "red"
-set linetype 32 linecolor rgb "dark-gray"
-set linetype 33 linecolor rgb "skyblue"
+set linetype $R_COLOR linecolor rgb "forest-green"
+set linetype $W_COLOR linecolor rgb "red"
+set linetype $S_COLOR linecolor rgb "dark-gray"
+set linetype $D_COLOR linecolor rgb "skyblue"
 EOF
 
     close_file($fh);
@@ -2650,9 +2659,9 @@ sub output_plot_sched($$)
 	    $fh = open_file($fname_summary, 0755);
 	    $title = undef;
 	    $ylabel = undef;
-	    # yrange cuts only 4 (running, cpu wait, sleep, block) bars area
+	    # yrange cuts only @sched_tpes bars area
 	    $ymin = $ylow;
-	    $ymax = $ylow + $ylen * 4;
+	    $ymax = $ylow + $ylen * $sched_total_height;
 	    $custom = "set xlabel \"$id ($comm)\" offset 0,1.5";
 	}
 
@@ -2669,15 +2678,11 @@ sub output_plot_sched($$)
 	my $need_comma = 0;
 	if ($n == 0) {
 	    # Line graph
-	    my @info_stat =
-		({ col => 2, name => "Running",	color => $R_COLOR },
-		 { col => 3, name => "CPU wait",	color => $W_COLOR },
-		 { col => 4, name => "Sleep",	color => $S_COLOR },
-		 { col => 5, name => "Block",	color => $D_COLOR },);
-	    foreach my $i (@info_stat) {
-		my $col = $i->{col};
-		my $name = $i->{name};
-		my $color = $i->{color};
+	    foreach my $type (@sched_types) {
+		my $info = $sched_graph_info{$type};
+		my $col = $info->{col};
+		my $name = $info->{name};
+		my $color = $info->{color};
 
 		print $fh ", \\\n" if ($need_comma);
 		print $fh "'$datafile_stat' using 1:${col} title \"${name}\" with lines linetype ${color}";
@@ -2688,16 +2693,12 @@ sub output_plot_sched($$)
 
 	# Bars
 	my $base = ($n == 0) ? 7 : 0;
-	my @info_time =
-	    ({ col => 2, ypos => $base + 3, color => $R_COLOR },
-	     { col => 3, ypos => $base + 2, color => $W_COLOR },
-	     { col => 4, ypos => $base + 1, color => $S_COLOR },
-	     { col => 5, ypos => $base + 0, color => $D_COLOR },);
-	foreach my $i (@info_time) {
-	    my $col = $i->{col};
-	    my $ypos_l = $i->{ypos};
-	    my $ypos_h = $i->{ypos} + 1;
-	    my $color = $i->{color};
+	my $ypos_h = $base + $sched_total_height;
+	foreach my $type (@sched_types) {
+	    my $info = $sched_graph_info{$type};
+	    my $col = $info->{col};
+	    my $color = $info->{color};
+	    my $ypos_l = $ypos_h - $info->{height};
 
 	    # For bar each schedule type
 	    if ($need_comma) {
@@ -2712,6 +2713,7 @@ sub output_plot_sched($$)
 		    "'$datafile_time' using 1:(ylow):1:${col}:(ylow + ylen * 0):(ylow + ylen * 5) notitle with boxxyerrorbars linetype ${color}";
 	    }
 
+	    $ypos_h = $ypos_l;
 	    $need_comma = 1;
 	}
 	print $fh "\n";
@@ -2758,13 +2760,12 @@ sub sched_stat_process
     my $end = $time;
     my $end_str = tv64_str($end);
 
-    # Output sched_*_type.dat
-    my %end_pos = ( R => 1, W => 2, S => 3, D => 4 );
-    my $idx = $end_pos{$type};
-    my @cols = ($plot_missing_char, $plot_missing_char, $plot_missing_char,
-		$plot_missing_char, $plot_missing_char);
+    # Output sched_*_time.dat
+
+    # fields are "start_str" + "one" for each types
+    my @cols = ($plot_missing_char) x (1 + scalar(@sched_types));
     $cols[0] = $start_str;
-    $cols[$idx] = $end_str;
+    $cols[$sched_graph_info{$type}{col} - 1] = $end_str;
 
     print $fh "@cols\n";
 
@@ -3283,7 +3284,7 @@ EOF
 	my $fh = open_id_datfile($id, "stat");
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
-	    foreach my $type ("R", "W", "S", "D") {
+	    foreach my $type (@sched_types) {
 		my $time_str = tv64_str($sched_s{$id}{$type}{sec}[$idx] || 0);
 		print $fh " $time_str";
 	    }

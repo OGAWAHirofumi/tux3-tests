@@ -4612,9 +4612,6 @@ sub run_record
 		push(@cmd, "--call-graph", "$opt_call_graph");
 	    }
 	}
-	if (not $opt_no_syscall) {
-	    push(@sched_events, @syscall_events);
-	}
 	if (not $opt_no_irq) {
 	    push(@sched_events, @irq_events);
 	    # Check uname
@@ -4625,6 +4622,16 @@ sub run_record
 	}
 	foreach my $event (@sched_events) {
 	    push(@cmd, "-e", $event);
+	}
+	if (not $opt_no_syscall) {
+	    foreach my $event (@syscall_events) {
+		# generated events are written by perf's write(2),
+		# then perf's write(2) generates event.
+		# To avoid this recursive, filter out perf itself.
+		#
+		# FIXME: v4.2 or later has --exclude-perf.
+		push(@cmd, "-e", $event, "--filter", "comm!=perf");
+	    }
 	}
 	push(@cmd, "--");
     }

@@ -3130,15 +3130,17 @@ sub sched::sched_process_exec
 #    update_cur_time($common_secs, $common_nsecs);
 #}
 
-#sub sched::sched_process_exit
-#{
-#    perf_args_normalize(\@_);
-#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	$common_pid, $common_comm, $common_callchain,
-#	$comm, $pid, $prio) = @_;
-#
-#    update_cur_time($common_secs, $common_nsecs);
-#}
+sub sched::sched_process_exit
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$comm, $pid, $prio) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+
+    syscall_process_exit($pid, @_);
+}
 
 #sub sched::sched_process_free
 #{
@@ -3718,12 +3720,14 @@ sub workqueue::workqueue_execute_end
 #
 
 my %syscall_state;
-my ($sys_sigreturn_id, $sys_ioctl_id);
+my ($sys_sigreturn_id, $sys_ioctl_id, $sys_exit_group_id, $sys_exit_id);
 
 sub syscall_id_init()
 {
     $sys_sigreturn_id = syscall_id("rt_sigreturn");
     $sys_ioctl_id = syscall_id("ioctl");
+    $sys_exit_group_id = syscall_id("exit_group");
+    $sys_exit_id = syscall_id("exit");
 }
 
 sub syscall_should_warn(@)
@@ -3850,6 +3854,26 @@ sub raw_syscalls::sys_exit
 	    # perf was started while process is running in syscall)
 	    $syscall_state{$common_pid}{exit_id} = $id;
 	    $syscall_state{$common_pid}{exit_time} = $time;
+	}
+    }
+}
+
+# Process exit, so close exit_group, exit syscall
+sub syscall_process_exit(@)
+{
+    my $pid = shift;
+    my @args = @_;
+
+    if (exists($syscall_state{$pid}) &&
+	exists($syscall_state{$pid}{enter_id})) {
+	my $id = $syscall_state{$pid}{enter_id};
+	if (($sys_exit_group_id and $id == $sys_exit_group_id) or
+	    ($sys_exit_id and $id == $sys_exit_id)) {
+	    # Get only common arguments
+	    splice(@args, DEV_POS);
+
+	    # Make dummy sys_exit to close sys_enter(exit_group or exit)
+	    raw_syscalls::sys_exit(@args, $id, 0);
 	}
     }
 }

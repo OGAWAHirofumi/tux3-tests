@@ -1111,6 +1111,9 @@ sub open_dev_datfile($$)
     return open_datfile($base);
 }
 
+# The position after common arguments
+use constant DEV_POS => 8;
+
 # FLUSH handling
 sub pr_flush_debug(@)
 {
@@ -1538,6 +1541,80 @@ sub add_queue_pending(@)
     update_qdepth($dev, $time, 1);
 }
 
+sub handle_split_pending(@)
+{
+    my ($rwbs_flags,
+	$event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm, $common_callchain,
+	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
+
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
+    my $pend_str = "pending_$dir";
+    my $is_split = 0;
+
+    # Is this split request?
+    if (exists($block_s{$dev}{$pend_str}{$sector}) &&
+	exists($block_s{$dev}{$pend_str}{$sector}{"split"}) &&
+	$block_s{$dev}{$pend_str}{$sector}{"split"}) {
+	if ($block_s{$dev}{$pend_str}{$sector}{"nr"} != $nr_sector) {
+	    my $devname = kdevname($dev);
+	    my $time = to_tv64($common_secs, $common_nsecs);
+	    pr_warn("$event_name: Split didn't match nr: ($devname): ",
+		    make_io_str($time, $dir, $sector, $nr_sector));
+	}
+	$is_split = 1;
+	# Remove split marker
+	delete($block_s{$dev}{$pend_str}{$sector});
+    }
+    return $is_split;
+}
+
+# Update Queue pending I/O for split
+sub add_split_pending(@)
+{
+    my ($rwbs_flags,
+	$event_name, $context, $common_cpu, $common_secs,
+	$common_nsecs, $common_pid, $common_comm, $common_callchain,
+	$dev, $sector, $new_sector, $rwbs, $comm) = @_;
+
+    my $dir = rwbs_str($rwbs_flags & (RWBS_READ | RWBS_WRITE));
+    my $time = to_tv64($common_secs, $common_nsecs);
+    my $pend_str = "pending_$dir";
+
+    # Is there original pending?
+    if (exists($block_s{$dev}{$pend_str}{$sector}) &&
+	$block_s{$dev}{$pend_str}{$sector}{"nr"}) {
+	my $orignal = $block_s{$dev}{$pend_str}{$sector}{"nr"};
+	my $nr_sector = ($new_sector - $sector);
+	my $left = $orignal - $nr_sector;
+
+	# Update $nr_sector of original pending
+	$block_s{$dev}{$pend_str}{$sector}{"nr"} = $nr_sector;
+
+	# At least v4.3, block:block_bio_queue is called for new split bio.
+	# So, we don't need to add new pending here.
+	#
+	# But original pending was already written to data files with
+	# original $nr_sector. So, we ignore block::block_bio_queue
+	# event for split request, to avoid accounting request again.
+	#
+	# FIXME: If possible, it may be better to account after split
+	# requests, not original request.
+
+	# Add split marker
+	$block_s{$dev}{$pend_str}{$new_sector}{"split"} = 1;
+	$block_s{$dev}{$pend_str}{$new_sector}{"nr"} = $left;
+
+	num_add($block_s{$dev}{"split"}{"nr"}, 1);
+	num_add($block_s{$dev}{"split"}{"blocks"}, $orignal);
+	return;
+    }
+
+    my $devname = kdevname($dev);
+    pr_warn("$event_name: Couldn't find Split: ($devname): ",
+	    make_io_str($time, $dir, $sector, 0));
+}
+
 # Update Queue pending I/O for merge
 sub update_pending($$$$$)
 {
@@ -1690,6 +1767,7 @@ sub add_complete_pending(@)
     my $time = to_tv64($common_secs, $common_nsecs);
     my $pend_str = "pending_$dir";
 
+    my $devname = kdevname($dev);
     if ($nr_sector == 0) {
 	# Request included FLUSH was done
 	if ($sector == 0) {
@@ -2058,6 +2136,23 @@ EOF
 	output_plot_reqsz($dev);
     }
 
+    # Summary Split Request
+    print $log <<"EOF";
+
+                    Split Request
+-----------------------------------------------------------------
+  Dev        NR      Avg      Total               (1 == 512 bytes)
+EOF
+    foreach my $dev (@devs) {
+	my $nr = $block_s{$dev}{"split"}{"nr"} || 0;
+	my $blocks = $block_s{$dev}{"split"}{"blocks"} || 0;
+
+	# Output short summary
+	my $avg = $nr ? ($blocks / $nr) : 0;
+	printf $log " %4s  %8u %8.2f   %8u\n",
+	    kdevname($dev), $nr, $avg, $blocks;
+    }
+
     # Summary Merged Request
     print $log <<"EOF";
 
@@ -2246,7 +2341,6 @@ EOF
     return 0;
 }
 
-use constant DEV_POS => 8;
 # remap partion to whole disk: $dev
 sub block_remap_dev
 {
@@ -2278,17 +2372,28 @@ sub block_remap_dev
 #    update_cur_time($common_secs, $common_nsecs);
 #}
 
-#sub block::block_split
-#{
-#    perf_args_normalize(\@_);
-#    block_remap_dev(\@_);
-#
-#    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
-#	$common_pid, $common_comm, $common_callchain,
-#	$dev, $sector, $new_sector, $rwbs, $comm) = @_;
-#
-#    update_cur_time($common_secs, $common_nsecs);
-#}
+sub block::block_split
+{
+    perf_args_normalize(\@_);
+    block_remap_dev(\@_);
+
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$dev, $sector, $new_sector, $rwbs, $comm) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+
+    my $rwbs_flags = parse_rwbs(@_);
+    if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	add_split_pending($rwbs_flags, @_);
+    } else {
+	my $devname = kdevname($dev);
+	my $tv64 = to_tv64($common_secs, $common_nsecs);
+
+	pr_warn("$event_name: Ignore unknown direction: ($devname): ",
+		make_io_str($tv64, $rwbs, $sector, 0));
+    }
+}
 
 #sub block::block_unplug
 #{
@@ -2359,9 +2464,14 @@ sub block::block_bio_queue
 
     if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
 	if ($nr_sector) {
-	    add_bno($rwbs_flags, @_);
-	    add_req("queue", $rwbs_flags, @_);
-	    add_queue_io($rwbs_flags, @_);
+	    if (handle_split_pending($rwbs_flags, @_)) {
+		# This is split request. Accounting was already done by
+		# $nr_sector in original request.
+	    } else {
+		add_bno($rwbs_flags, @_);
+		add_req("queue", $rwbs_flags, @_);
+		add_queue_io($rwbs_flags, @_);
+	    }
 	}
 	add_queue_pending($rwbs_flags, @_);
     } else {
@@ -3895,7 +4005,7 @@ sub run_record
     my %block_events = (
 #			"block:block_rq_remap" => FILTER_DEV,
 #			"block:block_bio_remap" => FILTER_DEV,
-#			"block:block_split" => FILTER_DEV,
+			"block:block_split" => FILTER_DEV,
 #			"block:block_unplug" => undef,
 #			"block:block_plug" => undef,
 #			"block:block_sleeprq" => FILTER_DEV,

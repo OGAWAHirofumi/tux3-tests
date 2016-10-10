@@ -113,7 +113,6 @@ my @opt_target_pid = ();
 my @opt_target_wid = ();
 my ($cur_time, $perf_start, $perf_end, $perf_xstart, $perf_xend, $perf_arch);
 my %devmap;
-$perf_arch = "x86_64";
 
 ##################################
 #
@@ -4300,6 +4299,7 @@ sub trace_begin
     $opt_kallsyms = $ENV{FSPERF_KALLSYMS};
     $opt_use_sched_switch = $ENV{FSPERF_USE_SCHED_SWITCH};
     $opt_debug_event = $ENV{FSPERF_DEBUG_EVENT};
+    $perf_arch = $ENV{FSPERF_PERF_ARCH};
 
     read_devmap();
     syscall_id_init();
@@ -4323,10 +4323,52 @@ sub trace_end
 # State machine
 #
 
+sub parse_perf_header($)
+{
+    my $fh = shift;
+    while (<$fh>) {
+	if (m!^# arch : (.*)!) {
+	    return "$1";
+	}
+    }
+    return undef;
+}
+
+sub read_perf_arch($)
+{
+    my $perf_data = shift;
+    my ($arch, $fh);
+
+    # Newer perf needs "--header-only" option to print header. Older
+    # perf prints header by default, but doesn't have "--header-only" option.
+    foreach my $opts (("--header-only", "")) {
+	open($fh, "-|", "perf report $opts -i $perf_data 2> /dev/null")
+	    or die "detect_perf_arch: perf report $opts: $!";
+	$arch = parse_perf_header($fh);
+	close($fh);
+	if ($arch) {
+	    return $arch;
+	}
+    }
+    return "unknown";
+}
+
+sub normalize_arch($)
+{
+    my $arch = shift;
+    if ($arch =~ m!i[456]86!) {
+	return "i386";
+    }
+    return $arch;
+}
+
 sub run_perf_script($)
 {
     my $data = shift;
     my $script = $ENV{FSPERF_SCRIPT};
+
+    # read "arch:" from perf data
+    $ENV{FSPERF_PERF_ARCH} = normalize_arch(read_perf_arch($data));
 
     my $cmd = "perf script --hide-call-graph -s $script -i $data";
 
@@ -4365,27 +4407,6 @@ sub run_cmd
 #
 # Commands
 #
-
-sub record_help
-{
-    print <<"EOF";
-Usage: $0 record <options> -- <cmdline>...
-
-Options:
- <cmdline>...		 Any command you can specify in a shell.
- -d, --device=DEV        Record events only for DEV.
-                         Accepts multiple times (e.g. -d /dev/sda -d /dev/sdb)
- --no-block              Don't run block events
- --no-sched              Don't run sched events
- -g, --call-graph=MODE   pass --call-graph option to sched events
- --no-syscall            Disable to collect syscall events
- --no-irq                Disable to collect irq events
- -h, --help              This help.
-
-EOF
-
-    exit(1);
-}
 
 sub get_kdev($)
 {
@@ -4709,6 +4730,27 @@ sub run_record
     push(@cmd, @ARGV);
 
     safe_system(@cmd);
+}
+
+sub record_help
+{
+    print <<"EOF";
+Usage: $0 record <options> -- <cmdline>...
+
+Options:
+ <cmdline>...		 Any command you can specify in a shell.
+ -d, --device=DEV        Record events only for DEV.
+                         Accepts multiple times (e.g. -d /dev/sda -d /dev/sdb)
+ --no-block              Don't run block events
+ --no-sched              Don't run sched events
+ -g, --call-graph=MODE   pass --call-graph option to sched events
+ --no-syscall            Disable to collect syscall events
+ --no-irq                Disable to collect irq events
+ -h, --help              This help.
+
+EOF
+
+    exit(1);
 }
 
 sub cmd_record

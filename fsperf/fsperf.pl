@@ -64,7 +64,7 @@ use File::Copy;
 no strict "refs";
 use FileCache;
 
-my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state);
+my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state, %irq_s);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_sched_kallsyms = "perf-sched.kallsyms";
@@ -499,15 +499,21 @@ my $R_COLOR	= 30;	# TASK_RUNNING color
 my $W_COLOR	= 31;	# cpu wait color
 my $S_COLOR	= 32;	# TASK_INTERRUPTIBLE color
 my $D_COLOR	= 33;	# TASK_UNINTERRUPTIBLE color
+my $IRQ_COLOR	= 34;	# IRQ color
+my $SIRQ_COLOR	= 35;	# Softirq color
 
 my $plot_missing_char = "-";
 
-my @sched_types = ("R", "W", "S", "D");
+my @sched_types = ("R", "W", "S", "D", "irq", "sirq");
 my %sched_graph_info =
-    ("R" => { col => 2, height => 1, name => "Running",  color => $R_COLOR },
-     "W" => { col => 3, height => 1, name => "CPU wait", color => $W_COLOR },
-     "S" => { col => 4, height => 1, name => "Sleep",    color => $S_COLOR },
-     "D" => { col => 5, height => 1, name => "Block",    color => $D_COLOR },);
+    (
+     "R"    => {col => 2,height => 1,  name => "Running", color => $R_COLOR},
+     "W"    => {col => 3,height => 1,  name => "CPU wait",color => $W_COLOR},
+     "S"    => {col => 4,height => 1,  name => "Sleep",   color => $S_COLOR},
+     "D"    => {col => 5,height => 1,  name => "Block",   color => $D_COLOR},
+     "irq"  => {col => 6,height => 0.5,name => "IRQ",     color => $IRQ_COLOR},
+     "sirq" => {col => 7,height => 0.5,name => "Softirq", color => $SIRQ_COLOR},
+    );
 my $sched_total_height = 0;
 foreach (@sched_types) { $sched_total_height += $sched_graph_info{$_}{height}; }
 
@@ -566,6 +572,8 @@ set linetype $R_COLOR linecolor rgb "forest-green"
 set linetype $W_COLOR linecolor rgb "red"
 set linetype $S_COLOR linecolor rgb "dark-gray"
 set linetype $D_COLOR linecolor rgb "skyblue"
+set linetype $IRQ_COLOR linecolor rgb "web-blue"
+set linetype $SIRQ_COLOR linecolor rgb "skyblue"
 EOF
 
     close_file($fh);
@@ -3400,6 +3408,42 @@ EOF
 	    "       Involuntary      %9u\n",
 	    $involuntary;
 
+	# irq/softirq stats
+	if ($irq_s{$id}) {
+	    printf $log "\n";
+	    print $log <<"EOF";
+                                   NR           Max           Min           Avg
+        IRQ/Softirq                          Elapse       Runtime         (sec)
+EOF
+
+	    my ($intr_nr, $intr_run, $intr_max, $intr_min);
+	    my $fmt1 = " %-28s: %6u %13s %13s %13s\n";
+	    my $fmt2 = " %-28s: %6s %13s %13s %13s\n";
+	    foreach my $name (sort(keys(%{$irq_s{$id}}))) {
+		my $nr = $irq_s{$id}{$name}{nr};
+		my $elapse = $irq_s{$id}{$name}{total_elapse};
+		my $runtime = $irq_s{$id}{$name}{total_run};
+		my $max = $irq_s{$id}{$name}{max};
+		my $min = $irq_s{$id}{$name}{min};
+		my $avg = $runtime / $nr;
+		printf $log $fmt1,
+		    $name, $nr, tv64_str($max), tv64_str($min), tv64_str($avg);
+		printf $log $fmt2,
+		    "", "", tv64_str($elapse), tv64_str($runtime), "";
+
+		num_add($intr_nr, $nr);
+		num_add($intr_run, $runtime);
+		num_max($intr_max, $max);
+		num_min($intr_min, $min);
+	    }
+	    my $intr_avg = $intr_nr ? ($intr_run / $intr_nr) : 0;
+	    printf $log $fmt1,
+		"TOTAL", $intr_nr, tv64_str($intr_max), tv64_str($intr_min),
+		tv64_str($intr_avg);
+	    printf $log $fmt2,
+		"", "", "", tv64_str($intr_run), "";
+	}
+
 	my $fh = open_id_datfile($id, "stat");
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
@@ -3621,6 +3665,268 @@ sub workqueue::workqueue_execute_end
 #	$common_pid, $common_comm, $common_callchain,
 #	$work, $function, $workqueue, $req_cpu, $cpu) = @_;
 #}
+
+##################################
+#
+# irq/softirq events to help sched stats
+#
+
+my %cpu_irq_state;
+
+sub sched_irq_stat($$$$)
+{
+    my $cid = shift;
+    my $time = shift;
+    my $pid = shift;
+    my $comm = shift;
+
+    my $data = pop(@{$cpu_irq_state{$cid}});
+
+    my $start_time = $data->{start};
+    my $irq_type = $data->{irq_type};
+    my $irq_name = $data->{irq_name};
+
+    my $elapse = $time - $start_time;
+    my $run = $elapse;
+    # Subtract time from interrupted irq runtime
+    if ($irq_s{$cid}{$irq_name}{nested_run}) {
+	num_sub($run, $irq_s{$cid}{$irq_name}{nested_run});
+	$irq_s{$cid}{$irq_name}{nested_run} = 0;
+    }
+    # intr is nested?
+    if (scalar(@{$cpu_irq_state{$cid}}) > 0) {
+	# Remember latest irq runtime
+	my $nest = $cpu_irq_state{$cid}[-1];
+	$irq_s{$cid}{$nest->{irq_name}}{nested_run} = $elapse;
+    }
+
+    my @ids;
+    if ($pid == 0) {
+	# skip if pid == 0
+	@ids = ($cid);
+    } else {
+	@ids = ($cid, $pid);
+    }
+    foreach my $id (@ids) {
+	num_add($irq_s{$id}{$irq_name}{nr}, 1);
+	num_add($irq_s{$id}{$irq_name}{total_elapse}, $elapse);
+	num_add($irq_s{$id}{$irq_name}{total_run}, $run);
+	num_max($irq_s{$id}{$irq_name}{max}, $run);
+	num_min($irq_s{$id}{$irq_name}{min}, $run);
+    }
+    # per cpu stats
+    sched_stat_process($irq_type, $cid, $cid, $time, $elapse);
+    # per pid/workqueue stats
+    sched_stat($irq_type, $pid, $comm, $time, $elapse) if ($pid != 0);
+}
+
+sub sched_irq_stat_entry($$$$)
+{
+    my $cpu = shift;
+    my $time = shift;
+    my $irq_type = shift;
+    my $irq_name = shift;
+
+    my $cid = to_cid($cpu);
+    my %data = (start => $time, irq_type => $irq_type, irq_name => $irq_name);
+    push(@{$cpu_irq_state{$cid}}, \%data);
+}
+
+sub sched_irq_stat_exit($$$$)
+{
+    my $cpu = shift;
+    my $time = shift;
+    my $pid = shift;
+    my $comm = shift;
+
+    my $cid = to_cid($cpu);
+    if (scalar(@{$cpu_irq_state{$cid}}) > 0) {
+	sched_irq_stat($cid, $time, $pid, $comm);
+    } else {
+	pr_warn("intr_exit event without intr_entry");
+    }
+}
+
+sub irq::irq_handler_entry
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$irq, $name) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    sched_irq_stat_entry($common_cpu, $time, "irq", "irq$irq-$name");
+}
+
+sub irq::irq_handler_exit
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$irq, $ret) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    sched_irq_stat_exit($common_cpu, $time, $common_pid, $common_comm);
+}
+
+sub to_softirq_name($)
+{
+    my $nr = shift;
+    # Convert vec to name by perf's symbolic fields
+    my $str = symbol_str("irq::softirq_entry", "vec", $nr);
+    if ($str) {
+	return $str;
+    }
+    return "$nr";
+}
+
+sub irq::softirq_entry
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$vec_nr) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    my $name = to_softirq_name($vec_nr);
+    sched_irq_stat_entry($common_cpu, $time, "sirq", "softirq-$name");
+}
+
+sub irq::softirq_exit
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$vec_nr) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    sched_irq_stat_exit($common_cpu, $time, $common_pid, $common_comm);
+}
+
+sub irq_vector_entry
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$vector) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    # remove irq_vectors:: prefix, and _entry postfix
+    my $name = substr($event_name, length("irq_vectors::"), -length("_entry"));
+    sched_irq_stat_entry($common_cpu, $time, "irq", "vec$vector-$name");
+}
+
+sub irq_vector_exit
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$vector) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    sched_irq_stat_exit($common_cpu, $time, $common_pid, $common_comm);
+}
+
+sub irq_vectors::call_function_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::call_function_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::call_function_single_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::call_function_single_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::deferred_error_apic_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::deferred_error_apic_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::error_apic_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::error_apic_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::irq_work_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::irq_work_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::local_timer_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::local_timer_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::reschedule_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::reschedule_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::spurious_apic_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::spurious_apic_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::thermal_apic_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::thermal_apic_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::threshold_apic_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::threshold_apic_exit
+{
+    irq_vector_exit(@_);
+}
+sub irq_vectors::x86_platform_ipi_entry
+{
+    irq_vector_entry(@_);
+}
+sub irq_vectors::x86_platform_ipi_exit
+{
+    irq_vector_exit(@_);
+}
 
 sub trace_unhandled
 {
@@ -4053,6 +4359,25 @@ sub run_record
 			"workqueue:workqueue_execute_start",
 #			"workqueue:workqueue_activate_work",
 #			"workqueue:workqueue_queue_work",
+
+			# irqs
+			"irq:irq_handler_entry",
+			"irq:irq_handler_exit",
+			"irq:softirq_entry",
+			"irq:softirq_exit",
+			"irq_vectors:call_function_*",
+			"irq_vectors:call_function_single_*",
+			"irq_vectors:deferred_error_apic_*",
+			"irq_vectors:error_apic_*",
+			# "irq_work_exit" can't use for perf sample,
+			# becase perf itself uses irq_work.
+			#"irq_vectors:irq_work_*",
+			"irq_vectors:local_timer_*",
+			"irq_vectors:reschedule_*",
+			"irq_vectors:spurious_apic_*",
+			"irq_vectors:thermal_apic_*",
+			"irq_vectors:threshold_apic_*",
+			"irq_vectors:x86_platform_ipi_*",
 		       );
 
     #

@@ -40,6 +40,15 @@ if ($ENV{'PERF_EXEC_PATH'}) {
 #use Carp 'verbose';
 #$SIG{ __DIE__ } = sub { Carp::confess( @_ ) };
 
+#sub dump_stack
+#{
+#    my $i = 1;
+#    print STDERR "Stack Trace:\n";
+#    while ((my @t = (caller($i++)))) {
+#	print STDERR "  $t[1]: $t[3] at $t[2]\n";
+#    }
+#}
+
 use strict;
 use warnings;
 use Math::BigInt try => 'GMP';

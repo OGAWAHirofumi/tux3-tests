@@ -317,6 +317,13 @@ sub calc_start_end_time
     $perf_xend = to_sec($perf_end) + 2;
 }
 
+# Decide width of summary image from for whole elapse time
+sub summary_image_width
+{
+#    return 100 * ($perf_xend - $perf_xstart);
+    return 1024;
+}
+
 # Remember cache FH to close before fork()
 my %cache_fh;
 
@@ -501,25 +508,25 @@ my $R_C_COLOR	= 10;	# read complete
 my $W_C_COLOR	= 11;	# write complete
 
 # Using linetype color for state
-my $R_COLOR	= 30;	# TASK_RUNNING color
-my $W_COLOR	= 31;	# cpu wait color
-my $S_COLOR	= 32;	# TASK_INTERRUPTIBLE color
-my $D_COLOR	= 33;	# TASK_UNINTERRUPTIBLE color
-my $IRQ_COLOR	= 34;	# IRQ color
-my $SIRQ_COLOR	= 35;	# Softirq color
+my $IRQ_COLOR	= 30;	# IRQ color
+my $SIRQ_COLOR	= 31;	# Softirq color
+my $W_COLOR	= 32;	# cpu wait color
+my $R_COLOR	= 33;	# TASK_RUNNING color
+my $D_COLOR	= 34;	# TASK_UNINTERRUPTIBLE color
+my $S_COLOR	= 35;	# TASK_INTERRUPTIBLE color
 my $SYS_COLOR	= 36;	# syscall color
 
 my $plot_missing_char = "-";
 
-my @sched_types = ("R", "W", "S", "D", "irq", "sirq", "sys");
+my @sched_types = ("irq", "sirq", "W", "R", "D", "S", "sys");
 my %sched_graph_info =
     (
-     "R"    => {col => 2,height => 1,  name => "Running", color => $R_COLOR},
-     "W"    => {col => 3,height => 1,  name => "CPU wait",color => $W_COLOR},
-     "S"    => {col => 4,height => 1,  name => "Sleep",   color => $S_COLOR},
-     "D"    => {col => 5,height => 1,  name => "Block",   color => $D_COLOR},
-     "irq"  => {col => 6,height => 0.5,name => "IRQ",     color => $IRQ_COLOR},
-     "sirq" => {col => 7,height => 0.5,name => "Softirq", color => $SIRQ_COLOR},
+     "irq"  => {col => 2,height => 0.5,name => "IRQ",     color => $IRQ_COLOR},
+     "sirq" => {col => 3,height => 0.5,name => "Softirq", color => $SIRQ_COLOR},
+     "W"    => {col => 4,height => 0.5,name => "CPU wait",color => $W_COLOR},
+     "R"    => {col => 5,height => 1,  name => "Running", color => $R_COLOR},
+     "D"    => {col => 6,height => 1,  name => "Block",   color => $D_COLOR},
+     "S"    => {col => 7,height => 1,  name => "Sleep",   color => $S_COLOR},
      "sys"  => {col => 8,height => 0.5,name => "Syscall", color => $SYS_COLOR},
     );
 my $sched_total_height = 0;
@@ -576,12 +583,12 @@ set linetype 23 linecolor rgb "khaki" pointtype 4
 set linetype 24 linecolor rgb "goldenrod" pointtype 4
 
 # For schedule
-set linetype $R_COLOR linecolor rgb "forest-green"
-set linetype $W_COLOR linecolor rgb "red"
-set linetype $S_COLOR linecolor rgb "dark-gray"
-set linetype $D_COLOR linecolor rgb "skyblue"
 set linetype $IRQ_COLOR linecolor rgb "web-blue"
 set linetype $SIRQ_COLOR linecolor rgb "skyblue"
+set linetype $W_COLOR linecolor rgb "red"
+set linetype $R_COLOR linecolor rgb "forest-green"
+set linetype $D_COLOR linecolor rgb "gray30"
+set linetype $S_COLOR linecolor rgb "gray80"
 set linetype $SYS_COLOR linecolor rgb "light-green"
 EOF
 
@@ -672,7 +679,7 @@ sub output_plot_summary($$)
 
     my $nr_plots = scalar(@plot_gp);
     my $height = 400 * $nr_plots;
-    my $width = 800;
+    my $width = summary_image_width();
     my $fontscale = 0.8;
 
     print $fh <<"EOF";
@@ -2723,8 +2730,8 @@ sub output_plot_sched_summary_pre($)
     my $fname_summary = fname_plot_sched_summary();
     my $fh = open_file($fname_summary, 0755);
 
-    my $height = 20 * $nr_plots;
-    my $width = 800;
+    my $height = 5 * $sched_total_height * $nr_plots;
+    my $width = summary_image_width();
     my $fontscale = 0.8;
 
     print $fh <<"EOF"

@@ -55,6 +55,7 @@ use Math::BigInt try => 'GMP';
 use Getopt::Long;
 use Cwd;
 use File::Copy;
+use POSIX ();
 
 # If there are many processes, we open sched_*.dat for each process.
 # So, this can be the cause of EMFILE.
@@ -94,6 +95,8 @@ my $opt_debug_event = 0;
 #
 # --call-graph option for sched events
 my $opt_call_graph = undef;
+# Disable to collect irq events
+my $opt_no_irq = 0;
 # Don't run block events
 my $opt_no_block = 0;
 # Don't run sched events
@@ -4138,6 +4141,7 @@ Options:
  --no-block              Don't run block events
  --no-sched              Don't run sched events
  -g, --call-graph=MODE   pass --call-graph option to sched events
+ --no-irq                Disable to collect irq events
  -h, --help              This help.
 
 EOF
@@ -4359,26 +4363,36 @@ sub run_record
 			"workqueue:workqueue_execute_start",
 #			"workqueue:workqueue_activate_work",
 #			"workqueue:workqueue_queue_work",
-
-			# irqs
-			"irq:irq_handler_entry",
-			"irq:irq_handler_exit",
-			"irq:softirq_entry",
-			"irq:softirq_exit",
-			"irq_vectors:call_function_*",
-			"irq_vectors:call_function_single_*",
-			"irq_vectors:deferred_error_apic_*",
-			"irq_vectors:error_apic_*",
-			# "irq_work_exit" can't use for perf sample,
-			# becase perf itself uses irq_work.
-			#"irq_vectors:irq_work_*",
-			"irq_vectors:local_timer_*",
-			"irq_vectors:reschedule_*",
-			"irq_vectors:spurious_apic_*",
-			"irq_vectors:thermal_apic_*",
-			"irq_vectors:threshold_apic_*",
-			"irq_vectors:x86_platform_ipi_*",
 		       );
+
+    my @irq_events = (
+		      # irqs
+		      "irq:irq_handler_entry",
+		      "irq:irq_handler_exit",
+		      "irq:softirq_entry",
+		      "irq:softirq_exit",
+		     );
+
+    my @x86_irq_events = (
+			  "irq_vectors:call_function_*",
+			  "irq_vectors:call_function_single_*",
+			  "irq_vectors:deferred_error_apic_*",
+			  "irq_vectors:error_apic_*",
+			  # "irq_work_exit" can't use for perf sample,
+			  # becase perf itself uses irq_work.
+			  #"irq_vectors:irq_work_*",
+			  "irq_vectors:local_timer_*",
+			  "irq_vectors:reschedule_*",
+			  "irq_vectors:spurious_apic_*",
+			  "irq_vectors:thermal_apic_*",
+			  "irq_vectors:threshold_apic_*",
+			  "irq_vectors:x86_platform_ipi_*",
+			 );
+
+    my %arch_events = (
+		       "i386" => \@x86_irq_events,
+		       "x86_64" => \@x86_irq_events,
+		      );
 
     #
     # Run perf record with following like options. Current perf
@@ -4423,6 +4437,14 @@ sub run_record
 		push(@cmd, "--call-graph", "$opt_call_graph");
 	    }
 	}
+	if (not $opt_no_irq) {
+	    push(@sched_events, @irq_events);
+	    # Check uname
+	    my $arch = (POSIX::uname)[4];
+	    if ($arch_events{$arch}) {
+		push(@sched_events, @{$arch_events{$arch}});
+	    }
+	}
 	foreach my $event (@sched_events) {
 	    push(@cmd, "-e", $event);
 	}
@@ -4444,6 +4466,7 @@ sub cmd_record
 			 "no-block"		=> \$opt_no_block,
 			 "no-sched"		=> \$opt_no_sched,
 			 "g|call-graph:s"	=> \$opt_call_graph,
+			 "no-irq"		=> \$opt_no_irq,
 			 "help"			=> \$help,
 			);
 

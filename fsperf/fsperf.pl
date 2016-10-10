@@ -65,7 +65,8 @@ use POSIX ();
 no strict "refs";
 use FileCache;
 
-my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state, %irq_s);
+my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state, %irq_s,
+    %syscall_s);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_sched_kallsyms = "perf-sched.kallsyms";
@@ -97,6 +98,8 @@ my $opt_debug_event = 0;
 my $opt_call_graph = undef;
 # Disable to collect irq events
 my $opt_no_irq = 0;
+# Disable to collect syscall events
+my $opt_no_syscall = 0;
 # Don't run block events
 my $opt_no_block = 0;
 # Don't run sched events
@@ -504,10 +507,11 @@ my $S_COLOR	= 32;	# TASK_INTERRUPTIBLE color
 my $D_COLOR	= 33;	# TASK_UNINTERRUPTIBLE color
 my $IRQ_COLOR	= 34;	# IRQ color
 my $SIRQ_COLOR	= 35;	# Softirq color
+my $SYS_COLOR	= 36;	# syscall color
 
 my $plot_missing_char = "-";
 
-my @sched_types = ("R", "W", "S", "D", "irq", "sirq");
+my @sched_types = ("R", "W", "S", "D", "irq", "sirq", "sys");
 my %sched_graph_info =
     (
      "R"    => {col => 2,height => 1,  name => "Running", color => $R_COLOR},
@@ -516,6 +520,7 @@ my %sched_graph_info =
      "D"    => {col => 5,height => 1,  name => "Block",   color => $D_COLOR},
      "irq"  => {col => 6,height => 0.5,name => "IRQ",     color => $IRQ_COLOR},
      "sirq" => {col => 7,height => 0.5,name => "Softirq", color => $SIRQ_COLOR},
+     "sys"  => {col => 8,height => 0.5,name => "Syscall", color => $SYS_COLOR},
     );
 my $sched_total_height = 0;
 foreach (@sched_types) { $sched_total_height += $sched_graph_info{$_}{height}; }
@@ -577,6 +582,7 @@ set linetype $S_COLOR linecolor rgb "dark-gray"
 set linetype $D_COLOR linecolor rgb "skyblue"
 set linetype $IRQ_COLOR linecolor rgb "web-blue"
 set linetype $SIRQ_COLOR linecolor rgb "skyblue"
+set linetype $SYS_COLOR linecolor rgb "light-green"
 EOF
 
     close_file($fh);
@@ -3295,6 +3301,7 @@ sub sched_main
 	my $elapse = $perf_end - $time;
 	sched_stat($type, $pid, $comm, $perf_end, $elapse);
     }
+    process_partial_syscall();
 
     my @ids = sort { id_for_cmp($a) <=> id_for_cmp($b) } keys(%sched_s);
 
@@ -3410,6 +3417,39 @@ EOF
 	printf $log
 	    "       Involuntary      %9u\n",
 	    $involuntary;
+
+	# syscall stats
+	if (exists($syscall_s{$id})) {
+	    printf $log "\n";
+	    print $log <<"EOF";
+                           NR    Err      Max(sec)      Min(sec)      Avg(sec)
+     Syscall                           Elapse(sec)
+EOF
+
+	    my ($total_nr, $total_elapse, $total_failed);
+	    my $fmt = " %-20s: %6s %6s %13s %13s %13s\n";
+	    foreach my $sys_id (sort { $a <=> $b } keys(%{$syscall_s{$id}})) {
+		my $nr = $syscall_s{$id}{$sys_id}{nr};
+		my $elapse = $syscall_s{$id}{$sys_id}{elapse};
+		my $failed = $syscall_s{$id}{$sys_id}{failed} || 0;
+		my $max = $syscall_s{$id}{$sys_id}{max};
+		my $min = $syscall_s{$id}{$sys_id}{min};
+		my $avg = $elapse / $nr;
+		printf $log $fmt,
+		    $sys_id, $nr, $failed, tv64_str($max),
+		    tv64_str($min), tv64_str($avg);
+		printf $log $fmt,
+		    "", "", "", tv64_str($elapse), "", "";
+
+		num_add($total_nr, $nr);
+		num_add($total_elapse, $elapse);
+		num_add($total_failed, $failed);
+	    }
+	    printf $log $fmt,
+		"TOTAL", $total_nr, $total_failed, "", "", "";
+	    printf $log $fmt,
+		"", "", "", tv64_str($total_elapse), "", "";
+	}
 
 	# irq/softirq stats
 	if ($irq_s{$id}) {
@@ -3668,6 +3708,134 @@ sub workqueue::workqueue_execute_end
 #	$common_pid, $common_comm, $common_callchain,
 #	$work, $function, $workqueue, $req_cpu, $cpu) = @_;
 #}
+
+##################################
+#
+# syscall events to help sched stats
+#
+
+my %syscall_state;
+my $sys_sigreturn_id = 15;
+my $sys_ioctl_id = 16;
+
+sub syscall_should_warn(@)
+{
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$id, $dummy) = @_;
+
+    # perf modify event state, so missing sys_enter/sys_exit is normal.
+    # Not warn about it.
+    if ($common_comm eq "perf" and $id == $sys_ioctl_id) {
+	return 0;
+    }
+    return 1;
+}
+
+sub has_sys_enter($$)
+{
+    my $pid = shift;
+    my $id = shift;
+
+    if (!exists($syscall_state{$pid}) ||
+	!exists($syscall_state{$pid}{enter_id})) {
+	return -1;
+    }
+
+    my $enter_id = $syscall_state{$pid}{enter_id};
+    if ($enter_id == $id) {
+	return $enter_id;
+    }
+    # sys_exit for rt_sigreturn is called with $id == -1
+    if ($enter_id == $sys_sigreturn_id && $id == -1) {
+	return $enter_id;
+    }
+    return -1;
+}
+
+# Process corner case of sys_enter/sys_exit
+sub process_partial_syscall
+{
+    foreach my $pid (keys(%syscall_state)) {
+	# perf was stopped before sys_exit
+	if (exists($syscall_state{$pid}{enter_id}) &&
+	    exists($sched_s{$pid}) && exists($sched_s{$pid}{end})) {
+	    my $comm = $sched_s{$pid}{comm};
+	    my $start = $syscall_state{$pid}{enter_time};
+	    my $end = $sched_s{$pid}{end};
+
+	    sched_stat("sys", $pid, $comm, $end, $end - $start);
+	}
+	# perf was started after sys_enter
+	if (exists($syscall_state{$pid}{exit_id}) &&
+	    exists($sched_s{$pid}) && exists($sched_s{$pid}{start})) {
+	    my $comm = $sched_s{$pid}{comm};
+	    my $start = $sched_s{$pid}{start};
+	    my $end = $syscall_state{$pid}{exit_time};
+
+	    sched_stat("sys", $pid, $comm, $end, $end - $start);
+	}
+    }
+}
+
+sub raw_syscalls::sys_enter
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$id, $args) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    if (exists($syscall_state{$common_pid}{enter_id})) {
+	pr_warn("[" . tv64_str($time) . "] " .
+		"sys_enter($id) event without sys_exit: ignored old")
+	    if (syscall_should_warn(@_));
+    }
+    $syscall_state{$common_pid}{enter_id} = $id;
+    $syscall_state{$common_pid}{enter_time} = $time;
+}
+
+sub raw_syscalls::sys_exit
+{
+    perf_args_normalize(\@_);
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$id, $ret) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    my $enter_id = has_sys_enter($common_pid, $id);
+    if ($enter_id >= 0) {
+	my $elapse = $time - $syscall_state{$common_pid}{enter_time};
+	delete($syscall_state{$common_pid}{enter_id});
+	delete($syscall_state{$common_pid}{enter_time});
+
+	sched_stat("sys", $common_pid, $common_comm, $time, $elapse);
+
+	num_add($syscall_s{$common_pid}{$enter_id}{nr}, 1);
+	num_add($syscall_s{$common_pid}{$enter_id}{elapse}, $elapse);
+	num_max($syscall_s{$common_pid}{$enter_id}{max}, $elapse);
+	num_min($syscall_s{$common_pid}{$enter_id}{min}, $elapse);
+	if ($ret < 0) {
+	    num_add($syscall_s{$common_pid}{$enter_id}{failed}, 1);
+	}
+    } else {
+	if (exists($syscall_state{$common_pid}) ||
+	    exists($syscall_s{$common_pid})) {
+	    pr_warn("[" . tv64_str($time) . "] " .
+		    "sys_exit($id) event without sys_entry: ignored")
+		if (syscall_should_warn(@_));
+	} else {
+	    # Remember initial sys_exit without sys_enter. (maybe,
+	    # perf was started while process is running in syscall)
+	    $syscall_state{$common_pid}{exit_id} = $id;
+	    $syscall_state{$common_pid}{exit_time} = $time;
+	}
+    }
+}
 
 ##################################
 #
@@ -4141,6 +4309,7 @@ Options:
  --no-block              Don't run block events
  --no-sched              Don't run sched events
  -g, --call-graph=MODE   pass --call-graph option to sched events
+ --no-syscall            Disable to collect syscall events
  --no-irq                Disable to collect irq events
  -h, --help              This help.
 
@@ -4365,6 +4534,12 @@ sub run_record
 #			"workqueue:workqueue_queue_work",
 		       );
 
+    my @syscall_events = (
+			  # syscalls
+			  "raw_syscalls:sys_enter",
+			  "raw_syscalls:sys_exit",
+			 );
+
     my @irq_events = (
 		      # irqs
 		      "irq:irq_handler_entry",
@@ -4437,6 +4612,9 @@ sub run_record
 		push(@cmd, "--call-graph", "$opt_call_graph");
 	    }
 	}
+	if (not $opt_no_syscall) {
+	    push(@sched_events, @syscall_events);
+	}
 	if (not $opt_no_irq) {
 	    push(@sched_events, @irq_events);
 	    # Check uname
@@ -4466,6 +4644,7 @@ sub cmd_record
 			 "no-block"		=> \$opt_no_block,
 			 "no-sched"		=> \$opt_no_sched,
 			 "g|call-graph:s"	=> \$opt_call_graph,
+			 "no-syscall"		=> \$opt_no_syscall,
 			 "no-irq"		=> \$opt_no_irq,
 			 "help"			=> \$help,
 			);

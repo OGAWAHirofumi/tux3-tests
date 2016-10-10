@@ -3720,14 +3720,24 @@ sub workqueue::workqueue_execute_end
 #
 
 my %syscall_state;
-my ($sys_sigreturn_id, $sys_ioctl_id, $sys_exit_group_id, $sys_exit_id);
+# name to syscall id table
+my %sys_id = (
+	      "rt_sigreturn"	=> undef,
+	      "ioctl"		=> undef,
+	      "exit_group"	=> undef,
+	      "exit"		=> undef,
+	     );
 
 sub syscall_id_init()
 {
-    $sys_sigreturn_id = syscall_id("rt_sigreturn");
-    $sys_ioctl_id = syscall_id("ioctl");
-    $sys_exit_group_id = syscall_id("exit_group");
-    $sys_exit_id = syscall_id("exit");
+    foreach my $name (keys(%sys_id)) {
+	my $id = syscall_id($name);
+	if (defined($id)) {
+	    $sys_id{$name} = $id;
+	} else {
+	    pr_warn("Couldn't resolve syscall id for \"$name\"");
+	}
+    }
 }
 
 sub syscall_should_warn(@)
@@ -3738,8 +3748,8 @@ sub syscall_should_warn(@)
 
     # perf modify event state, so missing sys_enter/sys_exit is normal.
     # Not warn about it.
-    if ($sys_ioctl_id) {
-	if ($common_comm eq "perf" and $id == $sys_ioctl_id) {
+    if (defined($sys_id{"ioctl"})) {
+	if ($id == $sys_id{"ioctl"} and $common_comm eq "perf") {
 	    return 0;
 	}
     }
@@ -3761,9 +3771,9 @@ sub has_sys_enter($$)
 	return $enter_id;
     }
     if ($perf_arch eq "i386" or $perf_arch eq "x86_64") {
-	if ($sys_sigreturn_id) {
+	if (defined($sys_id{"rt_sigreturn"})) {
 	    # sys_exit for rt_sigreturn is called with $id == -1
-	    if ($enter_id == $sys_sigreturn_id && $id == -1) {
+	    if ($enter_id == $sys_id{"rt_sigreturn"} && $id == -1) {
 		return $enter_id;
 	    }
 	}
@@ -3867,8 +3877,8 @@ sub syscall_process_exit(@)
     if (exists($syscall_state{$pid}) &&
 	exists($syscall_state{$pid}{enter_id})) {
 	my $id = $syscall_state{$pid}{enter_id};
-	if (($sys_exit_group_id and $id == $sys_exit_group_id) or
-	    ($sys_exit_id and $id == $sys_exit_id)) {
+	if ((defined($sys_id{"exit_group"}) and $id == $sys_id{"exit_group"}) or
+	    (defined($sys_id{"exit"}) and $id == $sys_id{"exit"})) {
 	    # Get only common arguments
 	    splice(@args, DEV_POS);
 

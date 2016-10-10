@@ -66,7 +66,7 @@ no strict "refs";
 use FileCache;
 
 my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state, %irq_s,
-    %syscall_s);
+    %syscall_s, %page_fault_s);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_sched_kallsyms = "perf-sched.kallsyms";
@@ -100,6 +100,8 @@ my $opt_call_graph = undef;
 my $opt_no_irq = 0;
 # Disable to collect syscall events
 my $opt_no_syscall = 0;
+# Disable to collect page fault events
+my $opt_no_page_fault = 0;
 # Don't run block events
 my $opt_no_block = 0;
 # Don't run sched events
@@ -510,24 +512,28 @@ my $W_C_COLOR	= 11;	# write complete
 # Using linetype color for state
 my $IRQ_COLOR	= 30;	# IRQ color
 my $SIRQ_COLOR	= 31;	# Softirq color
-my $W_COLOR	= 32;	# cpu wait color
-my $R_COLOR	= 33;	# TASK_RUNNING color
-my $D_COLOR	= 34;	# TASK_UNINTERRUPTIBLE color
-my $S_COLOR	= 35;	# TASK_INTERRUPTIBLE color
-my $SYS_COLOR	= 36;	# syscall color
+my $MIN_COLOR	= 32;	# Minor fault color
+my $MAJ_COLOR	= 33;	# Major fault color
+my $W_COLOR	= 34;	# cpu wait color
+my $R_COLOR	= 35;	# TASK_RUNNING color
+my $D_COLOR	= 36;	# TASK_UNINTERRUPTIBLE color
+my $S_COLOR	= 37;	# TASK_INTERRUPTIBLE color
+my $SYS_COLOR	= 38;	# syscall color
 
 my $plot_missing_char = "-";
 
-my @sched_types = ("irq", "sirq", "W", "R", "D", "S", "sys");
+my @sched_types = ("irq", "sirq", "min", "maj", "W", "R", "D", "S", "sys");
 my %sched_graph_info =
     (
      "irq"  => {col => 2,height => 0.5,name => "IRQ",     color => $IRQ_COLOR},
      "sirq" => {col => 3,height => 0.5,name => "Softirq", color => $SIRQ_COLOR},
-     "W"    => {col => 4,height => 0.5,name => "CPU wait",color => $W_COLOR},
-     "R"    => {col => 5,height => 1,  name => "Running", color => $R_COLOR},
-     "D"    => {col => 6,height => 1,  name => "Block",   color => $D_COLOR},
-     "S"    => {col => 7,height => 1,  name => "Sleep",   color => $S_COLOR},
-     "sys"  => {col => 8,height => 0.5,name => "Syscall", color => $SYS_COLOR},
+     "min"  => {col => 4,height => 0.5,name => "Minor",   color => $MIN_COLOR},
+     "maj"  => {col => 5,height => 0.5,name => "Major",   color => $MAJ_COLOR},
+     "W"    => {col => 6,height => 0.5,name => "CPU wait",color => $W_COLOR},
+     "R"    => {col => 7,height => 1,  name => "Running", color => $R_COLOR},
+     "D"    => {col => 8,height => 1,  name => "Block",   color => $D_COLOR},
+     "S"    => {col => 9,height => 1,  name => "Sleep",   color => $S_COLOR},
+     "sys"  => {col =>10,height => 0.5,name => "Syscall", color => $SYS_COLOR},
     );
 my $sched_total_height = 0;
 foreach (@sched_types) { $sched_total_height += $sched_graph_info{$_}{height}; }
@@ -585,6 +591,8 @@ set linetype 24 linecolor rgb "goldenrod" pointtype 4
 # For schedule
 set linetype $IRQ_COLOR linecolor rgb "web-blue"
 set linetype $SIRQ_COLOR linecolor rgb "skyblue"
+set linetype $MIN_COLOR linecolor rgb "violet"
+set linetype $MAJ_COLOR linecolor rgb "dark-violet"
 set linetype $W_COLOR linecolor rgb "red"
 set linetype $R_COLOR linecolor rgb "forest-green"
 set linetype $D_COLOR linecolor rgb "gray30"
@@ -2738,9 +2746,10 @@ sub output_plot_sched_summary_key()
     print $fh <<"EOF";
 # key position for sched_summary
 if (GPVAL_VERSION < 5.0) {
+set key samplen 1
 exit
 } else {
-set key right center
+set key right center samplen 1
 }
 EOF
     close_file($fh);
@@ -3513,6 +3522,40 @@ EOF
 	    "       Involuntary      %9u\n",
 	    $involuntary;
 
+	# page fault stats
+	if (exists($page_fault_s{$id})) {
+	    printf $log "\n";
+	    print $log <<"EOF";
+  Page Fault       NR   Elapse(sec)      Max(sec)      Min(sec)      Avg(sec)
+EOF
+	    my ($total_nr, $total_elapse, $total_failed);
+	    my $fmt = " %-12s: %6s %13s %13s %13s %13s\n";
+	    foreach my $type (("kern", "user")) {
+		next if (!exists($page_fault_s{$id}{$type}));
+
+		foreach my $is_maj ((0, 1)) {
+		    next if (!exists($page_fault_s{$id}{$type}{$is_maj}));
+
+		    my $data = $page_fault_s{$id}{$type}{$is_maj};
+		    my $nr = $data->{nr};
+		    my $elapse = $data->{total_elapse};
+		    my $max = $data->{max};
+		    my $min = $data->{min};
+		    my $avg = $elapse / $nr;
+		    my $name = $is_maj ? "major" : "minor";
+
+		    printf $log $fmt,
+			"${type} (${name})", $nr, tv64_str($elapse),
+			tv64_str($max), tv64_str($min), tv64_str($avg);
+
+		    num_add($total_nr, $nr);
+		    num_add($total_elapse, $elapse);
+		}
+	    }
+	    printf $log $fmt,
+		"TOTAL", $total_nr, tv64_str($total_elapse), "", "", "";
+	}
+
 	# syscall stats
 	if (exists($syscall_s{$id})) {
 	    printf $log "\n";
@@ -4257,6 +4300,122 @@ sub irq_vectors::x86_platform_ipi_exit
     irq_vector_exit(@_);
 }
 
+##################################
+#
+# page fault events to help sched stats
+#
+
+my (%page_fault_state);
+
+sub page_fault_enter
+{
+    my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
+	$common_pid, $common_comm, $common_callchain,
+	$address, $ip, $error_code, $type) = @_;
+
+    update_cur_time($common_secs, $common_nsecs);
+    my $time = to_tv64($common_secs, $common_nsecs);
+
+    my $data;
+    if (exists($page_fault_state{$common_pid}) and
+	scalar(@{$page_fault_state{$common_pid}}) > 0) {
+	my $last = $page_fault_state{$common_pid}[-1];
+	# If same source ip was nested, assumes something wrong happen
+	if ($last->{ip} == $ip) {
+	    my $str = time_str($common_secs, $common_nsecs);
+	    pr_warn("$event_name: $common_comm:$common_pid [$common_cpu] $str:"
+		    . " ignore old");
+	    # Overwrite old data
+	    $data = $last;
+	}
+    }
+    if (!defined($data)) {
+	# Push new data
+	$data = {};
+	push(@{$page_fault_state{$common_pid}}, $data);
+    }
+
+    $data->{comm} = $common_comm;
+    $data->{time} = $time;
+    $data->{addr} = $address;
+    $data->{ip} = $ip;
+    $data->{err} = $error_code;
+    $data->{type} = $type;
+}
+
+sub exceptions::page_fault_kernel
+{
+    page_fault_enter(@_, "kern");
+}
+
+sub exceptions::page_fault_user
+{
+    page_fault_enter(@_, "user");
+}
+
+sub page_fault_exit
+{
+    my ($event_name, $ip, $pid, $tid, $time, $addr, $is_maj) = @_;
+    my $err_msg;
+
+    update_cur_time(to_sec($time), to_nsec($time));
+
+    if (exists($page_fault_state{$tid}) and
+	scalar(@{$page_fault_state{$tid}}) > 0) {
+	my $data;
+
+	# Find same source ip in stacked faults
+	my $idx = $#{$page_fault_state{$tid}};
+	while ($idx >= 0) {
+	    $data = $page_fault_state{$tid}[$idx];
+	    if ($data->{ip} == $ip) {
+		last;
+	    }
+	    $idx--;
+	}
+	if ($idx < 0) {
+	    $err_msg = "invalid ip";
+	    goto ignore;
+	}
+	# Remove found element and later
+	splice(@{$page_fault_state{$tid}}, $idx);
+
+	my $elapse = $time - $data->{time};
+	my $type = $data->{type};
+	my $comm = $data->{comm};
+	my $sched_type = $is_maj ? "maj" : "min";
+	sched_stat($sched_type, $tid, $comm, $time, $elapse);
+
+	num_add($page_fault_s{$tid}{$type}{$is_maj}{nr}, 1);
+	num_add($page_fault_s{$tid}{$type}{$is_maj}{total_elapse}, $elapse);
+	num_max($page_fault_s{$tid}{$type}{$is_maj}{max}, $elapse);
+	num_min($page_fault_s{$tid}{$type}{$is_maj}{min}, $elapse);
+
+#	printf "%s: %s:%u: ip %x (%x), addr %x, err %u, elapse %s\n",
+#	    $data->{time}, $data->{comm}, $tid,
+#	    $data->{ip}, $ip, $data->{addr},
+#	    $data->{err}, $elapse;
+    } else {
+	$err_msg = "missing page_fault_enter";
+	goto ignore;
+    }
+    return;
+
+ ignore:
+    my $ip_str = hex($ip);
+    pr_warn("$event_name: $tid: ip $ip_str: $err_msg");
+}
+
+sub minor_faults
+{
+    page_fault_exit("minor_faults", @_, 0);
+}
+
+sub major_faults
+{
+    page_fault_exit("major_faults", @_, 1);
+}
+
 sub trace_unhandled
 {
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
@@ -4285,24 +4444,46 @@ sub print_header
 	   $event_name, $cpu, $secs, $nsecs, $pid, $comm);
 }
 
+use constant PERF_RECORD_SAMPLE => 9;
+use constant PERF_TYPE_SOFTWARE => 1;
+my %perf_sw_callback = (
+			# PERF_COUNT_SW_PAGE_FAULTS_MIN
+			5 => \&minor_faults,
+			# PERF_COUNT_SW_PAGE_FAULTS_MAJ
+			6 => \&major_faults,
+		       );
+
 # Packed byte string args of process_event():
 #
 # $event:	union perf_event	util/event.h
 # $attr:	struct perf_event_attr	linux/perf_event.h
 # $sample:	struct perf_sample	util/event.h
 # $raw_data:	perf_sample->raw_data	util/event.h
-#sub process_event
-#{
-#    my ($event, $attr, $sample, $raw_data) = @_;
-#
+sub process_event
+{
+    my ($event, $attr, $sample, $raw_data) = @_;
+
 #    my @event	= unpack("LSS", $event);
 #    my @attr	= unpack("LLQQQQQLLQQ", $attr);
 #    my @sample	= unpack("QLLQQQQQLL", $sample);
 #    my @raw_data	= unpack("C*", $raw_data);
-#
+
 #    use Data::Dumper;
 #    print Dumper \@event, \@attr, \@sample, \@raw_data;
-#}
+
+    my $event_type = unpack("L", $event);
+    if ($event_type == PERF_RECORD_SAMPLE) {
+	my ($attr_type, $attr_size, $attr_config) = unpack("LLQ", $attr);
+	if ($attr_type == PERF_TYPE_SOFTWARE) {
+	    my $callback = $perf_sw_callback{$attr_config};
+	    if ($callback) {
+		# ip, pid, tid, time, addr, ...
+		my @sample = unpack("QLLQQ", $sample);
+		$callback->(@sample);
+	    }
+	}
+    }
+}
 
 sub graph_only_main
 {
@@ -4715,20 +4896,19 @@ sub run_record
 #			"workqueue:workqueue_queue_work",
 		       );
 
+    # syscalls
     my @syscall_events = (
-			  # syscalls
 			  "raw_syscalls:sys_enter",
 			  "raw_syscalls:sys_exit",
 			 );
 
+    # irqs
     my @irq_events = (
-		      # irqs
 		      "irq:irq_handler_entry",
 		      "irq:irq_handler_exit",
 		      "irq:softirq_entry",
 		      "irq:softirq_exit",
 		     );
-
     my @x86_irq_events = (
 			  "irq_vectors:call_function_*",
 			  "irq_vectors:call_function_single_*",
@@ -4745,9 +4925,22 @@ sub run_record
 			  "irq_vectors:x86_platform_ipi_*",
 			 );
 
+    # page fault events
+    my @x86_page_fault_events = (
+			    "exceptions:page_fault_*",
+			    "minor-faults",
+			    "major-faults",
+			   );
+
     my %arch_events = (
-		       "i386" => \@x86_irq_events,
-		       "x86_64" => \@x86_irq_events,
+		       "i386" => {
+				  irq => \@x86_irq_events,
+				  page_fault => \@x86_page_fault_events,
+				 },
+		       "x86_64" => {
+				    irq => \@x86_irq_events,
+				    page_fault => \@x86_page_fault_events,
+				   },
 		      );
 
     #
@@ -4793,12 +4986,18 @@ sub run_record
 		push(@cmd, "--call-graph", "$opt_call_graph");
 	    }
 	}
+	# Check uname
+	my $arch = normalize_arch((POSIX::uname)[4]);
+	my $arch_event = $arch_events{$arch} if (exists($arch_events{$arch}));
 	if (not $opt_no_irq) {
 	    push(@sched_events, @irq_events);
-	    # Check uname
-	    my $arch = (POSIX::uname)[4];
-	    if ($arch_events{$arch}) {
-		push(@sched_events, @{$arch_events{$arch}});
+	    if ($arch_event and $arch_event->{irq}) {
+		push(@sched_events, @{$arch_event->{irq}});
+	    }
+	}
+	if (not $opt_no_page_fault) {
+	    if ($arch_event and $arch_event->{page_fault}) {
+		push(@sched_events, @{$arch_event->{page_fault}});
 	    }
 	}
 	foreach my $event (@sched_events) {
@@ -4837,6 +5036,7 @@ Options:
  -g, --call-graph=MODE   pass --call-graph option to sched events
  --no-syscall            Disable to collect syscall events
  --no-irq                Disable to collect irq events
+ --no-page-fault         Disable to collect page fault events
  -h, --help              This help.
 
 EOF
@@ -4855,6 +5055,7 @@ sub cmd_record
 			 "g|call-graph:s"	=> \$opt_call_graph,
 			 "no-syscall"		=> \$opt_no_syscall,
 			 "no-irq"		=> \$opt_no_irq,
+			 "no-page-fault"	=> \$opt_no_page_fault,
 			 "help"			=> \$help,
 			);
 

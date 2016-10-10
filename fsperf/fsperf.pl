@@ -3782,6 +3782,7 @@ sub read_devmap
 	return;
     }
     while (<$fh>) {
+	chomp;
 	my ($dev, $whole) = split(/ /);
 	$devmap{$dev} = $whole;
     }

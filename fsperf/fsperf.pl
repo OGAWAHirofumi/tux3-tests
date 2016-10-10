@@ -3221,6 +3221,8 @@ sub sched::sched_switch
     } elsif ($prev_state == TASK_RUNNING) {
 	$prev_type = "R";
 	$voluntary = "involuntary";
+    } elsif ($prev_state == TASK_DEAD) {
+	syscall_process_dead($prev_pid, @_);
     }
     if ($opt_use_sched_switch) {
 	# Per pid stat if need
@@ -3819,6 +3821,9 @@ sub raw_syscalls::sys_exit
     update_cur_time($common_secs, $common_nsecs);
     my $time = to_tv64($common_secs, $common_nsecs);
 
+    # If $id was fork family, there is no sys_enter for child process.
+    # We do nothing for now though, we should handle it explicitly?
+
     my $enter_id = has_sys_enter($common_pid, $id);
     if ($enter_id >= 0) {
 	my $elapse = $time - $syscall_state{$common_pid}{enter_time};
@@ -3846,6 +3851,23 @@ sub raw_syscalls::sys_exit
 	    $syscall_state{$common_pid}{exit_id} = $id;
 	    $syscall_state{$common_pid}{exit_time} = $time;
 	}
+    }
+}
+
+# Process dead, so close last sys_enter()
+sub syscall_process_dead(@)
+{
+    my $pid = shift;
+    my @args = @_;
+
+    if (exists($syscall_state{$pid}) &&
+	exists($syscall_state{$pid}{enter_id})) {
+	# Get only common arguments
+	splice(@args, DEV_POS);
+
+	# Make dummy sys_exit to close sys_enter
+	my $id = $syscall_state{$pid}{enter_id};
+	raw_syscalls::sys_exit(@args, $id, 0);
     }
 }
 

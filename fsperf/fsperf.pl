@@ -65,8 +65,7 @@ use POSIX ();
 no strict "refs";
 use FileCache;
 
-my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state, %irq_s,
-    %syscall_s, %page_fault_s);
+my (%block_s, %sched_s, %switch_state, %cpu_state, %wq_state);
 
 my $perf_sched_data = "perf-sched.data";
 my $perf_sched_kallsyms = "perf-sched.kallsyms";
@@ -2757,7 +2756,7 @@ EOF
     my $dummy_dat = "dummy";
     # Output dummy data to plot sample keys (gnuplot discards key if no data)
     foreach my $type (@sched_types) {
-	sched_output_time($type, $dummy_dat, $perf_start, $perf_start + 1);
+	common_output_time($type, $dummy_dat, $perf_start, $perf_start + 1);
     }
 
     # Output to plot sample keys for summary
@@ -2969,7 +2968,7 @@ sub is_interesting_pid($)
     return 0;
 }
 
-sub sched_output_time($$$$)
+sub common_output_time($$$$)
 {
     my $type = shift;
     my $id = shift;
@@ -2991,32 +2990,47 @@ sub sched_output_time($$$$)
     print $fh "@cols\n";
 }
 
-sub sched_stat_process
+sub common_stat_process(@)
 {
     my $type = shift;
+    my $key = shift;
+    my $subkey = shift;
     my $id = shift;
     my $comm = shift;
     my $time = shift;
     my $elapse = shift;
+    my $others = shift;
 
     my $start = $time - $elapse;
     my $end = $time;
 
     # Output sched_*_time.dat
-    sched_output_time($type, $id, $start, $end);
+    common_output_time($type, $id, $start, $end);
 
-    # Remember stat
-    $sched_s{$id}{comm} = $comm;
-    num_min($sched_s{$id}{start}, $start);
-    num_max($sched_s{$id}{end}, $end);
-    num_add($sched_s{$id}{$type}{total}, $elapse);
+    if (defined($key) and defined($subkey)) {
+	# Remember stat
+	$sched_s{$id}{comm} = $comm;
+	num_min($sched_s{$id}{start}, $start);
+	num_max($sched_s{$id}{end}, $end);
+	num_add($sched_s{$id}{$key}{$subkey}{nr}, 1);
+	num_add($sched_s{$id}{$key}{$subkey}{total}, $elapse);
+	foreach my $field (keys(%{$others})) {
+	    my $val = $others->{$field};
+	    if ($field eq "max_min") {
+		num_max($sched_s{$id}{$key}{$subkey}{max}, $val);
+		num_min($sched_s{$id}{$key}{$subkey}{min}, $val);
+	    } else {
+		num_add($sched_s{$id}{$key}{$subkey}{$field}, $val);
+	    }
+	}
+    }
     # Add elapse to proper position
     my $cur_sec = to_sec($end);
     while ($elapse > 0) {
 	my $cur_start = to_tv64($cur_sec, 0);
 	my $cur_elapse = min($end - $cur_start, $elapse);
 
-	num_add($sched_s{$id}{$type}{sec}{$cur_sec}, $cur_elapse);
+	num_add($sched_s{$id}{sec}{$type}{$cur_sec}, $cur_elapse);
 	$elapse -= $cur_elapse;
 
 	$end = $cur_start;
@@ -3024,18 +3038,21 @@ sub sched_stat_process
     }
 }
 
-# Collect pid/wid time based on sched_stat_*
-sub sched_stat($$$$$)
+sub common_stat(@)
 {
     my $type = shift;
+    my $key = shift;
+    my $subkey = shift;
     my $pid = shift;
     my $comm = shift;
     my $time = shift;
     my $elapse = shift;
+    my $others = shift;
 
     # Add stat as process
     if (is_interesting_pid($pid)) {
-	sched_stat_process($type, $pid, $comm, $time, $elapse);
+	common_stat_process($type, $key, $subkey, $pid, $comm, $time, $elapse,
+			    $others);
     }
 
     # Check workqueue work
@@ -3048,10 +3065,25 @@ sub sched_stat($$$$$)
 
 	my $start = max($time_start, $work_start);
 	my $end = min($time, $work_end);
+	my $elapse = $end - $start;
 
 	# Add stat as workqueue work
-	sched_stat_process($type, $wid, $sym, $end, $end - $start);
+	common_stat_process($type, $key, $subkey, $wid, $sym, $end, $elapse,
+			    $others);
     }
+}
+
+sub sched_stat_process($$$$$)
+{
+    my $type = shift;
+    common_stat_process($type, "sched", $type, @_);
+}
+
+# Collect pid/wid time based on sched_stat_*
+sub sched_stat($$$$$)
+{
+    my $type = shift;
+    common_stat($type, "sched", $type, @_);
 }
 
 # Collect pid/wid time based on sched_switch
@@ -3428,10 +3460,10 @@ EOF
 	my $comm = $sched_s{$id}{comm};
 	my $start_time = $sched_s{$id}{start} || 0;
 	my $end_time = $sched_s{$id}{end} || 0;
-	my $run_time = $sched_s{$id}{R}{total} || 0;
-	my $wait_time = $sched_s{$id}{W}{total} || 0;
-	my $sleep_time = $sched_s{$id}{S}{total} || 0;
-	my $block_time = $sched_s{$id}{D}{total} || 0;
+	my $run_time = $sched_s{$id}{sched}{R}{total} || 0;
+	my $wait_time = $sched_s{$id}{sched}{W}{total} || 0;
+	my $sleep_time = $sched_s{$id}{sched}{S}{total} || 0;
+	my $block_time = $sched_s{$id}{sched}{D}{total} || 0;
 	my $voluntary_s = $sched_s{$id}{"voluntary-S"} || 0;
 	my $voluntary_d = $sched_s{$id}{"voluntary-D"} || 0;
 	my $involuntary = $sched_s{$id}{"involuntary"} || 0;
@@ -3523,29 +3555,29 @@ EOF
 	    $involuntary;
 
 	# page fault stats
-	if (exists($page_fault_s{$id})) {
+	if (exists($sched_s{$id}{"min"}) || exists($sched_s{$id}{"maj"})) {
 	    printf $log "\n";
 	    print $log <<"EOF";
   Page Fault       NR   Elapse(sec)      Max(sec)      Min(sec)      Avg(sec)
 EOF
 	    my ($total_nr, $total_elapse, $total_failed);
 	    my $fmt = " %-12s: %6s %13s %13s %13s %13s\n";
-	    foreach my $type (("kern", "user")) {
-		next if (!exists($page_fault_s{$id}{$type}));
+	    foreach my $type (("min", "maj")) {
+		next if (!exists($sched_s{$id}{$type}));
 
-		foreach my $is_maj ((0, 1)) {
-		    next if (!exists($page_fault_s{$id}{$type}{$is_maj}));
+		foreach my $subkey (("kern", "user")) {
+		    next if (!exists($sched_s{$id}{$type}{$subkey}));
 
-		    my $data = $page_fault_s{$id}{$type}{$is_maj};
+		    my $data = $sched_s{$id}{$type}{$subkey};
 		    my $nr = $data->{nr};
-		    my $elapse = $data->{total_elapse};
+		    my $elapse = $data->{total};
 		    my $max = $data->{max};
 		    my $min = $data->{min};
 		    my $avg = $elapse / $nr;
-		    my $name = $is_maj ? "major" : "minor";
+		    my $name = ($type eq "min") ? "minor" : "major";
 
 		    printf $log $fmt,
-			"${type} (${name})", $nr, tv64_str($elapse),
+			"${name} (${subkey})", $nr, tv64_str($elapse),
 			tv64_str($max), tv64_str($min), tv64_str($avg);
 
 		    num_add($total_nr, $nr);
@@ -3557,7 +3589,7 @@ EOF
 	}
 
 	# syscall stats
-	if (exists($syscall_s{$id})) {
+	if (exists($sched_s{$id}{sys})) {
 	    printf $log "\n";
 	    print $log <<"EOF";
                            NR    Err      Max(sec)      Min(sec)      Avg(sec)
@@ -3566,12 +3598,13 @@ EOF
 
 	    my ($total_nr, $total_elapse, $total_failed);
 	    my $fmt = " %-20s: %6s %6s %13s %13s %13s\n";
-	    foreach my $sys_id (sort { $a <=> $b } keys(%{$syscall_s{$id}})) {
-		my $nr = $syscall_s{$id}{$sys_id}{nr};
-		my $elapse = $syscall_s{$id}{$sys_id}{elapse};
-		my $failed = $syscall_s{$id}{$sys_id}{failed} || 0;
-		my $max = $syscall_s{$id}{$sys_id}{max};
-		my $min = $syscall_s{$id}{$sys_id}{min};
+	    my $sys_stats = $sched_s{$id}{sys};
+	    foreach my $sys_id (sort { $a <=> $b } keys(%{$sys_stats})) {
+		my $nr = $sys_stats->{$sys_id}{nr};
+		my $elapse = $sys_stats->{$sys_id}{total};
+		my $failed = $sys_stats->{$sys_id}{failed};
+		my $max = $sys_stats->{$sys_id}{max};
+		my $min = $sys_stats->{$sys_id}{min};
 		my $avg = $elapse / $nr;
 		printf $log $fmt,
 		    syscall_name($sys_id), $nr, $failed, tv64_str($max),
@@ -3590,7 +3623,7 @@ EOF
 	}
 
 	# irq/softirq stats
-	if ($irq_s{$id}) {
+	if (exists($sched_s{$id}{irq})) {
 	    printf $log "\n";
 	    print $log <<"EOF";
                                    NR           Max           Min           Avg
@@ -3600,12 +3633,13 @@ EOF
 	    my ($intr_nr, $intr_run, $intr_max, $intr_min);
 	    my $fmt1 = " %-28s: %6u %13s %13s %13s\n";
 	    my $fmt2 = " %-28s: %6s %13s %13s %13s\n";
-	    foreach my $name (sort(keys(%{$irq_s{$id}}))) {
-		my $nr = $irq_s{$id}{$name}{nr};
-		my $elapse = $irq_s{$id}{$name}{total_elapse};
-		my $runtime = $irq_s{$id}{$name}{total_run};
-		my $max = $irq_s{$id}{$name}{max};
-		my $min = $irq_s{$id}{$name}{min};
+	    my $irq_stats = $sched_s{$id}{irq};
+	    foreach my $name (sort(keys(%{$irq_stats}))) {
+		my $nr = $irq_stats->{$name}{nr};
+		my $elapse = $irq_stats->{$name}{total};
+		my $runtime = $irq_stats->{$name}{run};
+		my $max = $irq_stats->{$name}{max};
+		my $min = $irq_stats->{$name}{min};
 		my $avg = $runtime / $nr;
 		printf $log $fmt1,
 		    $name, $nr, tv64_str($max), tv64_str($min), tv64_str($avg);
@@ -3629,7 +3663,7 @@ EOF
 	foreach my $idx (to_sec($start_time)..to_sec($end_time)) {
 	    print $fh $idx + 0.5;
 	    foreach my $type (@sched_types) {
-		my $time_str = tv64_str($sched_s{$id}{$type}{sec}{$idx} || 0);
+		my $time_str = tv64_str($sched_s{$id}{sec}{$type}{$idx} || 0);
 		print $fh " $time_str";
 	    }
 	    print $fh "\n";
@@ -3861,6 +3895,19 @@ my %sys_id = (
 	      "exit"		=> undef,
 	     );
 
+sub syscall_stat($$$$$$)
+{
+    my $id = shift;
+    my $pid = shift;
+    my $comm = shift;
+    my $time = shift;
+    my $elapse = shift;
+    my $failed = shift;
+
+    my %others = (max_min => $elapse, failed => $failed);
+    common_stat("sys", "sys", $id, $pid, $comm, $time, $elapse, \%others);
+}
+
 sub syscall_id_init()
 {
     foreach my $name (keys(%sys_id)) {
@@ -3925,7 +3972,8 @@ sub process_partial_syscall
 	    my $start = $syscall_state{$pid}{enter_time};
 	    my $end = $sched_s{$pid}{end};
 
-	    sched_stat("sys", $pid, $comm, $end, $end - $start);
+	    # Doesn't add to text stats (IOW, apply only graph)
+	    syscall_stat(undef, $pid, $comm, $end, $end - $start, 0);
 	}
 	# perf was started after sys_enter
 	if (exists($syscall_state{$pid}{exit_id}) &&
@@ -3934,7 +3982,8 @@ sub process_partial_syscall
 	    my $start = $sched_s{$pid}{start};
 	    my $end = $syscall_state{$pid}{exit_time};
 
-	    sched_stat("sys", $pid, $comm, $end, $end - $start);
+	    # Doesn't add to text stats (IOW, apply only graph)
+	    syscall_stat(undef, $pid, $comm, $end, $end - $start, 0);
 	}
     }
 }
@@ -3977,18 +4026,12 @@ sub raw_syscalls::sys_exit
 	delete($syscall_state{$common_pid}{enter_id});
 	delete($syscall_state{$common_pid}{enter_time});
 
-	sched_stat("sys", $common_pid, $common_comm, $time, $elapse);
-
-	num_add($syscall_s{$common_pid}{$enter_id}{nr}, 1);
-	num_add($syscall_s{$common_pid}{$enter_id}{elapse}, $elapse);
-	num_max($syscall_s{$common_pid}{$enter_id}{max}, $elapse);
-	num_min($syscall_s{$common_pid}{$enter_id}{min}, $elapse);
-	if ($ret < 0) {
-	    num_add($syscall_s{$common_pid}{$enter_id}{failed}, 1);
-	}
+	my $failed = ($ret < 0) ? 1 : 0;
+	syscall_stat($enter_id, $common_pid, $common_comm, $time, $elapse,
+		     $failed);
     } else {
 	if (exists($syscall_state{$common_pid}) ||
-	    exists($syscall_s{$common_pid})) {
+	    exists($sched_s{$common_pid}{sys})) {
 	    pr_warn("[" . tv64_str($time) . "] " .
 		    "sys_exit($id) event without sys_entry: ignored")
 		if (syscall_should_warn(@_));
@@ -4045,51 +4088,66 @@ sub syscall_process_dead(@)
 
 my %cpu_irq_state;
 
+sub irq_stat_cpu($$$$$$)
+{
+    my $irq_type = shift;
+    my $irq_name = shift;
+    my $cpu = shift;
+    my $time = shift;
+    my $elapse = shift;
+    my $run = shift;
+
+    my $cid = to_cid($cpu);
+    my %others = (run => $run, max_min => $run);
+    common_stat_process($irq_type, "irq", $irq_name, $cid, $cid, $time,
+			$elapse,\%others);
+}
+
+sub irq_stat($$$$$$$)
+{
+    my $irq_type = shift;
+    my $irq_name = shift;
+    my $pid = shift;
+    my $comm = shift;
+    my $time = shift;
+    my $elapse = shift;
+    my $run = shift;
+
+    my %others = (run => $run, max_min => $run);
+    common_stat($irq_type, "irq", $irq_name, $pid, $comm, $time, $elapse,
+		\%others);
+}
+
 sub sched_irq_stat($$$$)
 {
-    my $cid = shift;
+    my $cpu = shift;
     my $time = shift;
     my $pid = shift;
     my $comm = shift;
 
-    my $data = pop(@{$cpu_irq_state{$cid}});
+    my $data = pop(@{$cpu_irq_state{$cpu}});
 
     my $start_time = $data->{start};
     my $irq_type = $data->{irq_type};
     my $irq_name = $data->{irq_name};
+    my $nested_run = $data->{nested_run} || 0;
 
     my $elapse = $time - $start_time;
     my $run = $elapse;
     # Subtract time from interrupted irq runtime
-    if ($irq_s{$cid}{$irq_name}{nested_run}) {
-	num_sub($run, $irq_s{$cid}{$irq_name}{nested_run});
-	$irq_s{$cid}{$irq_name}{nested_run} = 0;
-    }
+    num_sub($run, $nested_run);
     # intr is nested?
-    if (scalar(@{$cpu_irq_state{$cid}}) > 0) {
+    if (scalar(@{$cpu_irq_state{$cpu}}) > 0) {
 	# Remember latest irq runtime
-	my $nest = $cpu_irq_state{$cid}[-1];
-	$irq_s{$cid}{$nest->{irq_name}}{nested_run} = $elapse;
+	$cpu_irq_state{$cpu}[-1]{nested_run} = $elapse;
     }
 
-    my @ids;
-    if ($pid == 0) {
-	# skip if pid == 0
-	@ids = ($cid);
-    } else {
-	@ids = ($cid, $pid);
-    }
-    foreach my $id (@ids) {
-	num_add($irq_s{$id}{$irq_name}{nr}, 1);
-	num_add($irq_s{$id}{$irq_name}{total_elapse}, $elapse);
-	num_add($irq_s{$id}{$irq_name}{total_run}, $run);
-	num_max($irq_s{$id}{$irq_name}{max}, $run);
-	num_min($irq_s{$id}{$irq_name}{min}, $run);
-    }
     # per cpu stats
-    sched_stat_process($irq_type, $cid, $cid, $time, $elapse);
+    irq_stat_cpu($irq_type, $irq_name, $cpu, $time, $elapse, $run);
     # per pid/workqueue stats
-    sched_stat($irq_type, $pid, $comm, $time, $elapse) if ($pid != 0);
+    if ($pid != 0) {
+	irq_stat($irq_type, $irq_name, $pid, $comm, $time, $elapse, $run);
+    }
 }
 
 sub sched_irq_stat_entry($$$$)
@@ -4099,9 +4157,8 @@ sub sched_irq_stat_entry($$$$)
     my $irq_type = shift;
     my $irq_name = shift;
 
-    my $cid = to_cid($cpu);
     my %data = (start => $time, irq_type => $irq_type, irq_name => $irq_name);
-    push(@{$cpu_irq_state{$cid}}, \%data);
+    push(@{$cpu_irq_state{$cpu}}, \%data);
 }
 
 sub sched_irq_stat_exit($$$$)
@@ -4111,9 +4168,8 @@ sub sched_irq_stat_exit($$$$)
     my $pid = shift;
     my $comm = shift;
 
-    my $cid = to_cid($cpu);
-    if (scalar(@{$cpu_irq_state{$cid}}) > 0) {
-	sched_irq_stat($cid, $time, $pid, $comm);
+    if (scalar(@{$cpu_irq_state{$cpu}}) > 0) {
+	sched_irq_stat($cpu, $time, $pid, $comm);
     } else {
 	pr_warn("intr_exit event without intr_entry");
     }
@@ -4307,6 +4363,19 @@ sub irq_vectors::x86_platform_ipi_exit
 
 my (%page_fault_state);
 
+sub page_stat($$$$$$)
+{
+    my $type = shift;
+    my $key = shift;
+    my $tid = shift;
+    my $comm = shift;
+    my $time = shift;
+    my $elapse = shift;
+
+    my %others = (max_min => $elapse);
+    common_stat($type, $type, $key, $tid, $comm, $time, $elapse, \%others);
+}
+
 sub page_fault_enter
 {
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
@@ -4381,15 +4450,10 @@ sub page_fault_exit
 	splice(@{$page_fault_state{$tid}}, $idx);
 
 	my $elapse = $time - $data->{time};
-	my $type = $data->{type};
+	my $type = $is_maj ? "maj" : "min";
+	my $key = $data->{type};
 	my $comm = $data->{comm};
-	my $sched_type = $is_maj ? "maj" : "min";
-	sched_stat($sched_type, $tid, $comm, $time, $elapse);
-
-	num_add($page_fault_s{$tid}{$type}{$is_maj}{nr}, 1);
-	num_add($page_fault_s{$tid}{$type}{$is_maj}{total_elapse}, $elapse);
-	num_max($page_fault_s{$tid}{$type}{$is_maj}{max}, $elapse);
-	num_min($page_fault_s{$tid}{$type}{$is_maj}{min}, $elapse);
+	page_stat($type, $key, $tid, $comm, $time, $elapse);
 
 #	printf "%s: %s:%u: ip %x (%x), addr %x, err %u, elapse %s\n",
 #	    $data->{time}, $data->{comm}, $tid,

@@ -109,12 +109,15 @@ my $opt_no_sched = 0;
 my $opt_graph_only = 0;
 # Print kallsyms
 my $opt_print_kallsyms = 0;
-# perf -a|--all-cpus
-my $opt_all_cpus = 1;
+
+# arch: in perf.data
+my $perf_arch;
+# cmdline: has -a|--all-cpus in perf.data
+my $perf_all_cpus;
 
 my @opt_target_pid = ();
 my @opt_target_wid = ();
-my ($cur_time, $perf_start, $perf_end, $perf_xstart, $perf_xend, $perf_arch);
+my ($cur_time, $perf_start, $perf_end, $perf_xstart, $perf_xend);
 my %devmap;
 
 ##################################
@@ -317,7 +320,7 @@ sub perf_is_duplicate(@)
 	@args) = @_;
 
     # If --all-cpus, no duplicate
-    return 0 if ($opt_all_cpus);
+    return 0 if ($perf_all_cpus);
     # If __perf_task() == current, no duplicate
     return 0 if ($common_pid == $perf_task);
 
@@ -4691,6 +4694,7 @@ sub trace_begin
     $opt_use_sched_switch = $ENV{FSPERF_USE_SCHED_SWITCH};
     $opt_debug_event = $ENV{FSPERF_DEBUG_EVENT};
     $perf_arch = $ENV{FSPERF_PERF_ARCH};
+    $perf_all_cpus = $ENV{FSPERF_PERF_ALL_CPUS};
 
     read_devmap();
     syscall_id_init();
@@ -4717,31 +4721,46 @@ sub trace_end
 sub parse_perf_header($)
 {
     my $fh = shift;
+    my $arch = undef;
+    my $has_all_cpus = 0;
     while (<$fh>) {
 	if (m!^# arch : (.*)!) {
-	    return "$1";
+	    $arch = "$1";
+	} elsif (m!^# cmdline : (.*)!) {
+	    my @v = split(' ', $1);
+	    foreach my $opt (@v) {
+		last if ($opt eq "--");
+
+		if (($opt eq "-a") or ($opt eq "--all-cpus")) {
+		    $has_all_cpus = 1;
+		    last;
+		}
+	    }
 	}
+    }
+    if (defined($arch)) {
+	return ($arch, $has_all_cpus);
     }
     return undef;
 }
 
-sub read_perf_arch($)
+sub read_perf_header($)
 {
     my $perf_data = shift;
-    my ($arch, $fh);
+    my $fh;
 
     # Newer perf needs "--header-only" option to print header. Older
     # perf prints header by default, but doesn't have "--header-only" option.
     foreach my $opts (("--header-only", "")) {
 	open($fh, "-|", "perf report $opts -i $perf_data 2> /dev/null")
 	    or die "detect_perf_arch: perf report $opts: $!";
-	$arch = parse_perf_header($fh);
+	my @values = parse_perf_header($fh);
 	close($fh);
-	if ($arch) {
-	    return $arch;
+	if (scalar(@values) > 0) {
+	    return @values;
 	}
     }
-    return "unknown";
+    return ("unknown", 0);
 }
 
 sub normalize_arch($)
@@ -4758,8 +4777,9 @@ sub run_perf_script($)
     my $data = shift;
     my $script = $ENV{FSPERF_SCRIPT};
 
-    # read "arch:" from perf data
-    $ENV{FSPERF_PERF_ARCH} = normalize_arch(read_perf_arch($data));
+    my ($arch, $has_all_cpus) = read_perf_header($data);
+    $ENV{FSPERF_PERF_ARCH} = normalize_arch($arch);
+    $ENV{FSPERF_PERF_ALL_CPUS} = $has_all_cpus;
 
     my $cmd = "perf script --hide-call-graph -s $script -i $data";
 

@@ -4763,6 +4763,45 @@ sub read_perf_header($)
     return ("unknown", 0);
 }
 
+sub perf_list($)
+{
+    my $names = shift;
+    my ($fh, @events);
+
+    open($fh, "-|", "perf list --raw-dump $names")
+	or die "perf_list: Couldn't run perf list: $!";
+    while (<$fh>) {
+	foreach my $event (split(/ /, $_)) {
+	    push(@events, $event);
+	}
+    }
+    close($fh);
+
+    return @events;
+}
+
+sub perf_get_arch_irq($)
+{
+    my $arch = shift;
+    my @events;
+
+    if ($arch eq "i386" or $arch eq "x86_64") {
+	foreach my $event (perf_list("irq_vectors:*")) {
+	    # "irq_work_exit" can't use for perf sample, becase perf itself
+	    # uses irq_work.
+	    next if ($event =~ m!irq_vectors:irq_work_.*!);
+
+	    if ($event =~ m!(irq_vectors:.*)_entry!) {
+		# Convert irq_vectors:foo_bar_entry => irq_vectors:foo_bar_*
+		my $str = "$1";
+		push(@events, "${str}_*");
+	    }
+	}
+    }
+
+    return @events;
+}
+
 sub normalize_arch($)
 {
     my $arch = shift;
@@ -5048,21 +5087,6 @@ sub run_record
 		      "irq:softirq_entry",
 		      "irq:softirq_exit",
 		     );
-    my @x86_irq_events = (
-			  "irq_vectors:call_function_*",
-			  "irq_vectors:call_function_single_*",
-			  "irq_vectors:deferred_error_apic_*",
-			  "irq_vectors:error_apic_*",
-			  # "irq_work_exit" can't use for perf sample,
-			  # becase perf itself uses irq_work.
-			  #"irq_vectors:irq_work_*",
-			  "irq_vectors:local_timer_*",
-			  "irq_vectors:reschedule_*",
-			  "irq_vectors:spurious_apic_*",
-			  "irq_vectors:thermal_apic_*",
-			  "irq_vectors:threshold_apic_*",
-			  "irq_vectors:x86_platform_ipi_*",
-			 );
 
     # page fault events
     my @x86_page_fault_events = (
@@ -5073,11 +5097,9 @@ sub run_record
 
     my %arch_events = (
 		       "i386" => {
-				  irq => \@x86_irq_events,
 				  page_fault => \@x86_page_fault_events,
 				 },
 		       "x86_64" => {
-				    irq => \@x86_irq_events,
 				    page_fault => \@x86_page_fault_events,
 				   },
 		      );
@@ -5130,9 +5152,8 @@ sub run_record
 	my $arch_event = $arch_events{$arch} if (exists($arch_events{$arch}));
 	if (not $opt_no_irq) {
 	    push(@sched_events, @irq_events);
-	    if ($arch_event and $arch_event->{irq}) {
-		push(@sched_events, @{$arch_event->{irq}});
-	    }
+	    # Add arch specific irq events
+	    push(@sched_events, perf_get_arch_irq($arch));
 	}
 	if (not $opt_no_page_fault) {
 	    if ($arch_event and $arch_event->{page_fault}) {

@@ -5046,6 +5046,7 @@ EOF
 	unlink($perf_wrapper);
     }
 
+    print STDERR "Wrapper command: $cmdline\n";
     return $perf_wrapper;
 }
 

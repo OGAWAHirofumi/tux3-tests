@@ -5017,6 +5017,38 @@ sub check_schedstats
     }
 }
 
+# Generated events are written by perf's write(2), then perf's
+# write(2) generates event.  To avoid this recursive, we want to
+# filter out perf itself.
+#
+# So this makes wrapper sh script, to be able to get perf pid and
+# filter it out.
+my $perf_wrapper = "perf-wrapper.sh";
+sub perf_wrapper_cmd($)
+{
+    my $cmdline = shift;
+
+    open(my $fh, ">", $perf_wrapper)
+	or die "Couldn't create $perf_wrapper: $!";
+    print $fh <<"EOF";
+#!/bin/sh
+
+# disable pathname expansion
+set -f
+
+exec $cmdline "\$@"
+EOF
+    close($fh);
+
+    chmod(0700, $perf_wrapper);
+
+    END {
+	unlink($perf_wrapper);
+    }
+
+    return $perf_wrapper;
+}
+
 sub run_record
 {
     my @kdevs = @_;
@@ -5119,32 +5151,35 @@ sub run_record
     my @cmd;
     # Make block events cmdline
     if (not $opt_no_block) {
-	@cmd = ("perf", "record", "-a", "-c1", "-o", $perf_block_data);
+	my @block_cmd = ("perf", "record", "-a", "-c1", "-o", $perf_block_data);
 	foreach my $event (sort(keys(%block_events))) {
-	    push(@cmd, "-e", $event);
+	    push(@block_cmd, "-e", $event);
 	    # Add filter
 	    if ($block_events{$event} && @kdevs) {
 		my $filter_type = $block_events{$event};
 		my $filter = make_filter_str($filter_type, @kdevs);
-		push(@cmd, "--filter", $filter);
+		push(@block_cmd, "--filter", $filter);
 	    }
 	}
-	push(@cmd, "--");
+	push(@block_cmd, "--");
+	push(@cmd, @block_cmd);
     }
 
     if (not $opt_no_sched) {
+	my @sched_cmd;
+
 	# Check sched_schedstats
 	check_schedstats
 	# Copy kallsyms for using later
 	copy_kallsyms();
 
 	# Make sched events cmdline
-	push(@cmd, "perf", "record", "-a", "-c1", "-o", $perf_sched_data);
+	push(@sched_cmd, "perf", "record", "-a", "-c1", "-o", $perf_sched_data);
 	if (defined($opt_call_graph)) {
 	    if (length($opt_call_graph) == 0) {
-		push(@cmd, "-g");
+		push(@sched_cmd, "-g");
 	    } else {
-		push(@cmd, "--call-graph", "$opt_call_graph");
+		push(@sched_cmd, "--call-graph", "$opt_call_graph");
 	    }
 	}
 	# Check uname
@@ -5161,19 +5196,19 @@ sub run_record
 	    }
 	}
 	foreach my $event (@sched_events) {
-	    push(@cmd, "-e", $event);
+	    push(@sched_cmd, "-e", $event);
 	}
 	if (not $opt_no_syscall) {
+	    # See comment of perf_wrapper()
+	    # FIXME: v4.2 or later has --exclude-perf.
 	    foreach my $event (@syscall_events) {
-		# generated events are written by perf's write(2),
-		# then perf's write(2) generates event.
-		# To avoid this recursive, filter out perf itself.
-		#
-		# FIXME: v4.2 or later has --exclude-perf.
-		push(@cmd, "-e", $event, "--filter", "comm!=perf");
+		push(@sched_cmd, "-e", $event, "--filter", "common_pid!=\$\$");
 	    }
+	    my $wrapper = perf_wrapper_cmd(join(' ', @sched_cmd));
+	    @sched_cmd = ("./$wrapper");
 	}
-	push(@cmd, "--");
+	push(@sched_cmd, "--");
+	push(@cmd, @sched_cmd);
     }
 
     # Add user cmdline

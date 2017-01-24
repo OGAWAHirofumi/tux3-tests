@@ -339,7 +339,7 @@ sub perf_is_duplicate(@)
     # Found duplicated event: ignore this event
     return 1;
 
- new_event:
+new_event:
     $perf_dup_event{$event_name}{$common_pid} = \@args;
     return 0;
 }
@@ -4523,7 +4523,7 @@ sub page_fault_exit
     }
     return;
 
- ignore:
+ignore:
     my $ip_str = hex($ip);
     pr_warn("$event_name: $tid: ip $ip_str: $err_msg");
 }

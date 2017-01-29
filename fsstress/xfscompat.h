@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <sys/ioctl.h>
+#include <linux/fs.h>
 #include <linux/ioctl.h>
 
 typedef signed short		__s16;
@@ -39,10 +40,12 @@ typedef struct xfs_fsop_bulkreq {
 	__int32_t	*ocount;
 } xfs_fsop_bulkreq_t;
 
+#ifndef FS_XFLAG_REALTIME
 struct fsxattr {
 	__u32		fsx_xflags;	/* xflags field value (get/set) */
 	__u32		fsx_extsize;	/* extsize field value (get/set)*/
 };
+#endif
 
 typedef struct xfs_error_injection {
 	__s32		fd;

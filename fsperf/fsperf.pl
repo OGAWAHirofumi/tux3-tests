@@ -706,10 +706,38 @@ pause -1 "Hit return to continue"
 EOF
 }
 
+sub output_plot_summary_layout($$$$$)
+{
+    my $fh = shift;
+    my $size_x = shift;
+    my $size_y = shift;
+    my $pos_x = shift;
+    my $pos_y = shift;
+
+    print $fh "set size size_x * $size_x, size_y * $size_y\n";
+    print $fh "set origin origin_x($pos_x), origin_y($pos_y)\n";
+}
+
+sub output_plot_summary_concat($$)
+{
+    my $fh = shift;
+    my $gp_fname = shift;
+
+    open(my $gp_fh, "<", $gp_fname) or die "Couldn't open file: $gp_fname: $!";
+    while (<$gp_fh>) {
+	next if (m!^pause!);
+	print $fh $_;
+    }
+    close($gp_fh);
+}
+
 sub output_plot_summary($$)
 {
     my $dev = shift;
     my $need_sched = shift;
+
+    # Close all cached FH
+    close_file_all();
 
     my $devname = kdevname($dev);
     my $fname = sprintf("%s_summary.gp", $devname);
@@ -736,8 +764,12 @@ sub output_plot_summary($$)
 	push(@plot_gp, @sched_gp);
     }
 
-    my $nr_plots = scalar(@plot_gp);
-    my $height = 400 * $nr_plots;
+    my $rows = scalar(@plot_gp);
+    my $cols = 1;
+    my $scale_x = 1.0;
+    my $scale_y = 0.9;
+
+    my $height = 400 * $rows;
     my $width = summary_image_width();
     my $fontscale = 0.8;
 
@@ -747,22 +779,35 @@ sub output_plot_summary($$)
 set term png truecolor size ${width},${height} fontscale ${fontscale}
 set output '${devname}_summary.png'
 set lmargin 15
-set multiplot layout ${nr_plots},1 columnsfirst scale 1.0,0.9 offset 0.0,0.0
+set multiplot
+
+# layout helpers
+rows          = $rows
+cols          = $cols
+scale_x       = $scale_x
+scale_y       = $scale_y
+size_x        = 1.0 * scale_x
+size_y        = (1.0 / rows) * scale_y
+origin_x(val) = (1.0 / cols) * val
+origin_y(val) = (1.0 / rows) * (rows - val - 1)
 
 EOF
-    close_file($fh);
-
-    # Close all cached FH
-    close_file_all();
 
     my $oldpwd = getcwd();
     chdir($output_dir);
 
-    my $cmd = "cat " . join(" ", @plot_gp) . " | grep -v ^pause >> $fname";
-    safe_system($cmd);
+    my $pos_col = 0;
+    my $pos_row = 0;
+    foreach my $gp (@plot_gp) {
+	output_plot_summary_layout($fh, 1.0, 1.0, $pos_col, $pos_row);
+	output_plot_summary_concat($fh, $gp);
+	$pos_row++;
+    }
+
+    close_file($fh);
 
     # Run summary.gp
-    $cmd = "./$fname";
+    my $cmd = "./$fname";
     safe_system_with_output("$fname.output", $cmd);
 
     chdir($oldpwd);

@@ -674,6 +674,8 @@ sub output_plot_pre($$$$@)
 #set output 'example.svg'
 
 unset format
+unset offsets
+unset yrange
 load "${fname_color}"
 
 EOF
@@ -744,28 +746,39 @@ sub output_plot_summary($$)
 
     my $fh = open_file($fname, 0755);
 
-    my @plot_gp = (
-		   fname_plot_bno($dev),
-		   fname_plot_mbps($dev),
-		   fname_plot_iops($dev),
-		   fname_plot_reqsz($dev),
-		   fname_plot_qdepth($dev),
-		   fname_plot_lat_q2c($dev, "c"),
-		   fname_plot_lat_d2c($dev, "c"),
-		   fname_plot_seek_nr($dev, "c"),
-		   fname_plot_seek_step($dev, "c")
-		  );
+    use constant IDX_FNAME => 0;
+    use constant IDX_SIZE_X => 1;
+    use constant IDX_SIZE_Y => 2;
+    use constant IDX_COL => 3;
+    use constant IDX_ROW => 4;
+
+    my @plot_gp;
+    my $nr = 0;
+    push(@plot_gp, [ fname_plot_bno($dev),		1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_mbps($dev),		1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_iops($dev),		1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_reqsz($dev),		1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_qdepth($dev),		1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_lat_q2c($dev, "c"),	1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_lat_d2c($dev, "c"),	1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_hist_d2c($dev, "r"),	0.5, 1.0, 0, $nr, ]);
+    push(@plot_gp, [ fname_plot_hist_d2c($dev, "w"),	0.5, 1.0, 1, $nr++, ]);
+    push(@plot_gp, [ fname_plot_seek_nr($dev, "c"),	1.0, 1.0, 0, $nr++, ]);
+    push(@plot_gp, [ fname_plot_seek_step($dev, "c"),	1.0, 1.0, 0, $nr++, ]);
+
     # Add schedule plot if need
     if ($need_sched and (scalar(@opt_target_pid) || scalar(@opt_target_wid))) {
 	my @sched_gp = map {
 	    fname_plot_sched($_);
 	} (@opt_target_pid, @opt_target_wid);
 
-	push(@plot_gp, @sched_gp);
+	foreach my $gp_fname (@sched_gp) {
+	    push(@plot_gp, [ $gp_fname, 1.0, 1.0, 0, $nr++]);
+	}
     }
 
-    my $rows = scalar(@plot_gp);
-    my $cols = 1;
+    my $rows = $nr;
+    my $cols = 2;
     my $scale_x = 1.0;
     my $scale_y = 0.9;
 
@@ -796,12 +809,15 @@ EOF
     my $oldpwd = getcwd();
     chdir($output_dir);
 
-    my $pos_col = 0;
-    my $pos_row = 0;
-    foreach my $gp (@plot_gp) {
-	output_plot_summary_layout($fh, 1.0, 1.0, $pos_col, $pos_row);
-	output_plot_summary_concat($fh, $gp);
-	$pos_row++;
+    foreach my $gp_p (@plot_gp) {
+	my $gp_fname = $gp_p->[IDX_FNAME];
+	my $size_x = $gp_p->[IDX_SIZE_X];
+	my $size_y = $gp_p->[IDX_SIZE_Y];
+	my $pos_col = $gp_p->[IDX_COL];
+	my $pos_row = $gp_p->[IDX_ROW];
+
+	output_plot_summary_layout($fh, $size_x, $size_y, $pos_col, $pos_row);
+	output_plot_summary_concat($fh, $gp_fname);
     }
 
     close_file($fh);
@@ -1168,6 +1184,62 @@ sub output_plot_lat_d2c($$)
     my $dev = shift;
     my $dir = shift;
     output_plot_lat_x2c("block::block_rq_issue", $dev, $dir);
+}
+
+sub fname_plot_hist_x2c($$$)
+{
+    my $event_name = shift;
+    my $dev = shift;
+    my $dir = shift;
+    my $shortname = $EVENT_SHORTNAME{$event_name};
+    return sprintf("%s_plot_hist_%s2c_%s.gp", kdevname($dev),
+		   lc($shortname), $dir);
+}
+
+sub fname_plot_hist_d2c($$)
+{
+    my $dev = shift;
+    my $dir = shift;
+    return fname_plot_hist_x2c("block::block_rq_issue", $dev, $dir);
+}
+
+sub output_plot_hist_d2c($$$$)
+{
+    my $dev = shift;
+    my $dir = shift;
+    my $unit = shift;
+    my $no_data = shift; # if no data, make dummy graph to avoid error
+    my $event_name = "block::block_rq_issue";
+    my $shortname = $EVENT_SHORTNAME{$event_name};
+    my $fname = fname_plot_hist_x2c($event_name, $dev, $dir);
+    my $datafile = $no_data ?
+	"/dev/null" : sprintf("%s_lat_%s2c_%s.dat",
+			      kdevname($dev), lc($shortname), $dir);
+
+    my $fh = open_file($fname, 0755);
+
+    my $title = sprintf("%s to Complete Latency Histogram - (%s)",
+			$EVENT_LONGNAME{$event_name} , $DIR_LONGNAME{$dir});
+    my $label = sprintf("%s2C", $shortname);
+
+    output_plot_pre($fh, $title,
+		    "Latency time (unit $unit secs)", "Count",
+		    "unset xrange",
+		    $no_data ? "set xrange [0:1]" : "set xrange [0:]",
+		    $no_data ? "set yrange [0:1]" : "set yrange [0:]",
+		    "set offsets graph 0, graph 0, graph 0.05, graph 0.05",
+		    "",
+		    "binwidth = $unit",
+		    "bin(val) = binwidth * floor(val / binwidth) + binwidth / 2.0",
+		    "set boxwidth binwidth * 0.9");
+
+    print $fh <<"EOF";
+'$datafile' using (bin(column(2))):(1.0) title \"${label}\" smooth frequency with boxes fill solid
+EOF
+
+    output_plot_post($fh);
+
+    close_file($fh);
 }
 
 sub fname_plot_seek_nr($$)
@@ -2344,6 +2416,27 @@ EOF
 	    # Create plot script
 	    output_plot_lat_q2c($dev, $dir);
 	    output_plot_lat_d2c($dev, $dir);
+	}
+
+	# Create plot histogram script
+	my $hist_unit = 1000000; # 1ms by default
+	foreach my $dir ("r", "w") {
+	    my $type = "d2c";
+	    my $total = $block_s{$dev}{"lat_${type}_total_${dir}"} || 0;
+	    my $nr = $block_s{$dev}{"lat_${type}_nr_${dir}"} || 0;
+	    my $avg = $nr ? ($total / $nr) : 0;
+
+	    # Calculate unit for histogram
+	    while ($avg > 0 and $avg < $hist_unit) {
+		$hist_unit /= 10;
+	    }
+	}
+	my $unit_str = tv64_str($hist_unit);
+	$unit_str =~ s/0*$//;
+	foreach my $dir ("r", "w") {
+	    my $type = "d2c";
+	    my $total = $block_s{$dev}{"lat_${type}_total_${dir}"} || 0;
+	    output_plot_hist_d2c($dev, $dir, $unit_str, $total == 0);
 	}
     }
 

@@ -1773,7 +1773,7 @@ sub handle_split_pending(@)
 	}
 	$is_split = 1;
 	# Remove split marker
-	delete($block_s{$dev}{$pend_str}{$sector});
+	delete($block_s{$dev}{$pend_str}{$sector}{"split"});
     }
     return $is_split;
 }
@@ -1809,7 +1809,15 @@ sub add_split_pending(@)
 	#
 	# FIXME: If possible, it may be better to account after split
 	# requests, not original request.
+	#
+	# Newer kernel doesn't call block:block_bio_queue anymore. So
+	# we emulate block:block_bio_queue in here.
 
+	# Emulate block_bio_queue for split new bio
+	add_queue_pending($rwbs_flags, "block:block_bio_queue", $context,
+			  $common_cpu, $common_secs, $common_nsecs,
+			  $common_pid, $common_comm, $common_callchain,
+			  $dev, $new_sector, $left, $rwbs, $comm);
 	# Add split marker
 	$block_s{$dev}{$pend_str}{$new_sector}{"split"} = 1;
 	$block_s{$dev}{$pend_str}{$new_sector}{"nr"} = $left;
@@ -2693,8 +2701,10 @@ sub block::block_bio_queue
     }
 
     if ($rwbs_flags & (RWBS_READ | RWBS_WRITE)) {
+	my $is_split = 0;
 	if ($nr_sector) {
-	    if (handle_split_pending($rwbs_flags, @_)) {
+	    $is_split = handle_split_pending($rwbs_flags, @_);
+	    if ($is_split) {
 		# This is split request. Accounting was already done by
 		# $nr_sector in original request.
 	    } else {
@@ -2703,7 +2713,9 @@ sub block::block_bio_queue
 		add_queue_io($rwbs_flags, @_);
 	    }
 	}
-	add_queue_pending($rwbs_flags, @_);
+	if (not $is_split) {
+	    add_queue_pending($rwbs_flags, @_);
+	}
     } else {
 	my $devname = kdevname($dev);
 	my $tv64 = to_tv64($common_secs, $common_nsecs);

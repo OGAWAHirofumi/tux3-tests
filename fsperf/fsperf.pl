@@ -2871,16 +2871,18 @@ sub block::block_rq_complete
 
 sub block::block_rq_requeue
 {
+    # Old block_rq_requeue was having "errors" at pos[11], newer one is not.
+    # To make simple, remove pos[11] if old args.
+    splice(@_, DEV_POS + 3, 1) if (scalar(@_) == 14);
+
     perf_args_normalize(\@_);
     block_remap_dev(\@_);
 
     my ($event_name, $context, $common_cpu, $common_secs, $common_nsecs,
 	$common_pid, $common_comm, $common_callchain,
-	$dev, $sector, $nr_sector, $errors, $rwbs, $cmd) = @_;
+	$dev, $sector, $nr_sector, $rwbs, $cmd) = @_;
 
     my @normalized_args = @_;
-    splice(@normalized_args, DEV_POS + 3, 1); # remove $errors
-
     my $rwbs_flags = parse_rwbs(@normalized_args);
 
     update_cur_time($common_secs, $common_nsecs);

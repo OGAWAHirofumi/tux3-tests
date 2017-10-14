@@ -898,6 +898,15 @@ sub parse_rwbs(@)
 	$common_nsecs, $common_pid, $common_comm, $common_callchain,
 	$dev, $sector, $nr_sector, $rwbs, $comm) = @_;
 
+    # After introducing "enum req_opf", pre-flush operation doesn't
+    # include W flag anymore. So in here, we convert from "FF" to "FW"
+    # like old flags for compatible.
+    if ($rwbs eq "FF") {
+	$rwbs = "FW";
+    } elsif ($rwbs eq "FFS") {
+	$rwbs = "FWS";
+    }
+
     my @chars = split("", $rwbs);
     my $rwbs_flags = 0;
 

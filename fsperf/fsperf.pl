@@ -247,6 +247,16 @@ sub pr_warn(@)
     warn "Warning: @_\n";
 }
 
+# "perf report" calls setns(2) to check process details, and it may
+# change CWD of this process.  Make sure, change back to original here.
+sub perf_fix_cwd
+{
+    if (not $ENV{FSPERF_CWD}) {
+	$ENV{FSPERF_CWD} = getcwd();
+    }
+    chdir($ENV{FSPERF_CWD});
+}
+
 sub safe_system_with_output
 {
     my $output = shift;
@@ -387,6 +397,8 @@ sub open_file($;$$)
     my $curdir = shift;
     my $path;
 
+    perf_fix_cwd();
+
     if ($curdir) {
 	$path = $name;
     } else {
@@ -447,6 +459,7 @@ sub kallsyms_load($)
     my $re_addr16 = $re_addr . "{16}";
 
     # No way to dump kallsyms by perf, so use "strings"
+    perf_fix_cwd();
     open(my $fh, "-|", "strings $data") or die "Couldn't run `strings': $!";
 
     my $last = -1;
@@ -4867,6 +4880,8 @@ sub trace_end
     my $mode = $ENV{FSPERF_MODE};
     my $func = $mode_table{$mode}->{func};
 
+    perf_fix_cwd();
+
     # Call post process function
     $func->();
 
@@ -5576,6 +5591,8 @@ sub cmd_debug_run
     require $debug_event_fname;
     exit(0);
 }
+
+perf_fix_cwd();
 
 my %cmd_func = (
 		"record"	=> \&cmd_record,
